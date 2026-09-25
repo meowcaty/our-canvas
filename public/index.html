@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#14101f">
+<title>🎨 Our Canvas — draw together</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ HOME ============ -->
+<div id="screen-home" class="screen">
+  <div class="home-card">
+    <div class="logo">🎨</div>
+    <h1>Our Canvas</h1>
+    <p class="tagline">one infinite canvas, two brushes, zero distance</p>
+
+    <label class="field">
+      <span>Your name</span>
+      <input id="inp-name" type="text" maxlength="16" placeholder="e.g. Percy" autocomplete="off">
+    </label>
+
+    <div class="home-tabs">
+      <button id="tab-create" class="tab active">Create room</button>
+      <button id="tab-join" class="tab">Join room</button>
+    </div>
+
+    <div id="pane-create">
+      <label class="field">
+        <span>Room password <small>(share it with your person 🔐)</small></span>
+        <input id="inp-create-pass" type="password" placeholder="min 4 characters" autocomplete="off">
+      </label>
+      <button id="btn-create" class="btn primary">Create &amp; start drawing ✨</button>
+    </div>
+
+    <div id="pane-join" class="hidden">
+      <label class="field">
+        <span>Room code</span>
+        <input id="inp-join-code" type="text" maxlength="4" placeholder="ABCD" autocomplete="off" autocapitalize="characters">
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input id="inp-join-pass" type="password" placeholder="room password" autocomplete="off">
+      </label>
+      <button id="btn-join" class="btn primary">Join canvas 💞</button>
+    </div>
+
+    <div id="home-error" class="error"></div>
+  </div>
+</div>
+
+<!-- ============ ROOM ============ -->
+<div id="screen-room" class="screen hidden">
+  <canvas id="board"></canvas>
+
+  <div id="topbar">
+    <button id="chip-code" class="chip" title="tap to copy invite link">🏠 <span id="room-code">····</span></button>
+    <div class="top-actions">
+      <button id="btn-undo" class="icon-btn" title="undo">↩️</button>
+      <button id="btn-redo" class="icon-btn" title="redo">↪️</button>
+      <button id="btn-clear" class="icon-btn" title="clear canvas">🗑️</button>
+    </div>
+  </div>
+
+  <div id="peer-toast" class="peer-toast hidden"></div>
+
+  <div id="toolbar">
+    <div id="tools-row" class="tools-row">
+      <button class="tool active" data-tool="pen" title="Pen">🖊️</button>
+      <button class="tool" data-tool="pencil" title="Pencil">✏️</button>
+      <button class="tool" data-tool="marker" title="Marker">🖍️</button>
+      <button class="tool" data-tool="highlighter" title="Highlighter">🖌️</button>
+      <button class="tool" data-tool="neon" title="Neon glow">💡</button>
+      <button class="tool" data-tool="eraser" title="Eraser">🧽</button>
+      <button class="tool" data-tool="line" title="Line">📏</button>
+      <button class="tool" data-tool="rect" title="Rectangle">⬛</button>
+      <button class="tool" data-tool="circle" title="Circle">⭕</button>
+      <button class="tool" data-tool="text" title="Text">🔤</button>
+      <button class="tool" data-tool="pan" title="Move canvas">✋</button>
+    </div>
+    <div class="controls-row">
+      <div id="colors-row" class="colors-row"></div>
+      <label class="size-wrap" title="brush size">
+        <span>●</span>
+        <input id="inp-size" type="range" min="2" max="48" value="8">
+      </label>
+    </div>
+  </div>
+
+  <div id="text-overlay" class="hidden">
+    <input id="inp-text" type="text" maxlength="200" placeholder="type something cute…">
+    <div class="text-btns">
+      <button id="btn-text-ok" class="btn primary small">Place ✨</button>
+      <button id="btn-text-cancel" class="btn small">cancel</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
