@@ -210,12 +210,12 @@ async function main() {
       io.emit('stroke-remove', { id });
     });
 
-    // live move/resize of shapes & text — author only
+    // live move/resize of shapes & text — shared canvas, anyone may edit
     socket.on('stroke-transform', ({ id, points, x, y, size }) => {
       const c = clients.get(socket.id);
       if (!c) return;
       const stroke = strokes.find((s) => s.id === id);
-      if (!stroke || stroke.authorId !== c.authorId) return;
+      if (!stroke) return;
       if (!['line', 'rect', 'circle', 'text'].includes(stroke.tool)) return;
       const patch = {};
       if (stroke.tool === 'text') {
@@ -230,11 +230,12 @@ async function main() {
       socket.broadcast.emit('stroke-transform', { id, ...patch });
     });
 
+    // shared canvas: anyone may delete anything
     socket.on('stroke-delete', ({ id }) => {
       const c = clients.get(socket.id);
       if (!c) return;
       const i = strokes.findIndex((x) => x.id === id);
-      if (i < 0 || strokes[i].authorId !== c.authorId) return;
+      if (i < 0) return;
       strokes.splice(i, 1);
       store.scheduleSave(strokes);
       io.emit('stroke-remove', { id });

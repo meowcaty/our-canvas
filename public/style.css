@@ -196,7 +196,58 @@ html, body {
 .delete-btn:active { transform: scale(.88); }
 [data-theme="dark"] .delete-btn { background: rgba(44,44,46,.92); box-shadow: 0 4px 16px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12); }
 
-/* 8-digit OTP entry */
+/* playful loading overlay while the canvas is fetched */
+.canvas-loader {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+  background: var(--bg);
+}
+.canvas-loader.hidden { display: none; }
+.loader-icon {
+  width: 78px; height: 78px; border-radius: 24px;
+  background: linear-gradient(135deg, #ff2d55, #ff7a59);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 14px 34px rgba(255, 45, 85, .35);
+  animation: loaderBob 1.6s ease-in-out infinite;
+}
+.loader-icon svg { width: 38px; height: 38px; }
+@keyframes loaderBob {
+  0%, 100% { transform: translateY(0) rotate(-5deg) scale(1); }
+  50% { transform: translateY(-14px) rotate(5deg) scale(1.05); }
+}
+.loader-dots { display: flex; gap: 8px; }
+.loader-dots span {
+  width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
+  animation: loaderDot 1.2s ease-in-out infinite;
+}
+.loader-dots span:nth-child(2) { animation-delay: .15s; }
+.loader-dots span:nth-child(3) { animation-delay: .3s; }
+@keyframes loaderDot {
+  0%, 60%, 100% { transform: translateY(0); opacity: .35; }
+  30% { transform: translateY(-10px); opacity: 1; }
+}
+.loader-text { margin: 0; font-size: 15px; font-weight: 500; color: var(--text-2); }
+
+/* persistent server connection indicator in the topbar */
+.top-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.conn-pill {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px;
+  background: var(--tool-bg);
+  font-size: 11.5px; font-weight: 600; letter-spacing: .1px;
+  color: var(--text-2); white-space: nowrap;
+  transition: color .25s ease;
+}
+.conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #8e8e93; flex: none; }
+.conn-pill.live .conn-dot { background: #30d158; box-shadow: 0 0 8px rgba(48, 209, 88, .8); }
+.conn-pill.live { color: var(--text); }
+.conn-pill.connecting .conn-dot { background: #ff9f0a; animation: connPulse 1.1s ease-in-out infinite; }
+.conn-pill.offline .conn-dot { background: #ff453a; }
+@keyframes connPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+@media (max-width: 380px) {
+  #conn-text { display: none; }
+  .conn-pill { padding: 5px 8px; }
+}
 .otp-row { display: flex; gap: 7px; justify-content: center; margin: 4px 0 6px; }
 .otp-row .otp {
   flex: 1 1 0; min-width: 0; max-width: 46px; height: 56px;

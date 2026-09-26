@@ -243,7 +243,28 @@ function enterCanvas() {
     G.fromTo('#toolbar', { y: 70, opacity: 0 }, { y: 0, opacity: 1, duration: .65, ease: 'power3.out', delay: .15 });
     G.fromTo('#toolbar .tool', { scale: 0, opacity: 0 }, { scale: 1, opacity: 1, duration: .45, ease: 'back.out(1.8)', stagger: .035, delay: .3, clearProps: 'scale,opacity' });
   }
-  if (!socket) connectSocket();
+  if (!socket) {
+    // canvas content arrives over the socket — playful loader until it does
+    $('#canvas-loader').classList.remove('hidden');
+    connectSocket();
+  }
+}
+
+function hideLoader() {
+  const l = $('#canvas-loader');
+  if (!l || l.classList.contains('hidden')) return;
+  if (G) G.to(l, { opacity: 0, duration: .45, ease: 'power2.out', onComplete: () => { l.classList.add('hidden'); l.style.opacity = ''; } });
+  else l.classList.add('hidden');
+}
+
+/* persistent server connection indicator */
+let firstConn = true;
+function setConn(state) {
+  const pill = $('#conn-pill'), txt = $('#conn-text');
+  if (!pill || !txt) return;
+  pill.classList.remove('live', 'connecting', 'offline');
+  pill.classList.add(state);
+  txt.textContent = state === 'live' ? 'Live' : state === 'connecting' ? 'Reconnecting…' : 'Offline';
 }
 
 /* ================= canvas setup ================= */
@@ -517,7 +538,6 @@ function insideSelection(w) {
   const pad = 12 / cam.zoom;
   return w.x > b.x - pad && w.x < b.x + b.w + pad && w.y > b.y - pad && w.y < b.y + b.h + pad;
 }
-const isMine = (s) => s && myStrokeIds.includes(s.id);
 
 function select(id) {
   selectedId = id;
@@ -547,7 +567,7 @@ function positionDeleteBtn() {
 $('#btn-delete').onclick = () => {
   const s = strokes.get(selectedId);
   if (!s) return deselect();
-  if (!isMine(s)) { toast(`Only ${s.author} can delete this`); return; }
+  // shared canvas: either of you can delete anything
   strokes.delete(s.id);
   const i = myStrokeIds.indexOf(s.id);
   if (i >= 0) myStrokeIds.splice(i, 1);
@@ -681,7 +701,7 @@ canvas.addEventListener('pointerdown', (e) => {
     const h = hitHandle(w);
     if (h) {
       const s = strokes.get(selectedId);
-      if (!isMine(s)) { toast(`Only ${s.author} can change this`); return; }
+      // shared canvas: either of you can resize anything
       const b = shapeBBox(s);
       gesture = {
         kind: 'resize-sel', s, handle: h,
@@ -694,12 +714,10 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     if (insideSelection(w)) {
       const s = strokes.get(selectedId);
-      if (isMine(s)) {
-        gesture = { kind: 'move-sel', s, lastW: w };
-        hideRing();
-        return;
-      }
-      // partner's shape: tap keeps selection, drag falls through to draw
+      // shared canvas: either of you can move anything
+      gesture = { kind: 'move-sel', s, lastW: w };
+      hideRing();
+      return;
     }
   }
 
@@ -1064,10 +1082,24 @@ function peerToast(msg) {
 function connectSocket() {
   // websocket first (no long-polling handshake delay), polling as fallback
   socket = io({ transports: ['websocket', 'polling'] });
-  socket.on('connect_error', () => {
-    setTimeout(() => location.reload(), 800);
+  socket.on('connect', () => {
+    setConn('live');
+    if (!firstConn) toast('Back online 💕');
+    firstConn = false;
+  });
+  socket.on('disconnect', () => {
+    setConn('connecting');
+    toast('Connection lost — reconnecting…');
+  });
+  socket.io.on('reconnect_attempt', () => setConn('connecting'));
+  socket.on('connect_error', (err) => {
+    // expired session → back to the lock screen via reload;
+    // anything else → socket.io retries on its own, pill shows it
+    if (err && /unauthorized/i.test(err.message || '')) { setTimeout(() => location.reload(), 800); return; }
+    setConn('connecting');
   });
   socket.on('canvas-state', ({ strokes: list, me, peers: peerList }) => {
+    hideLoader();
     strokes.clear();
     for (const s of list) strokes.set(s.id, s);
     peers.clear();

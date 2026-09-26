@@ -168,12 +168,14 @@ const once = (sock, ev, timeout = 4000) =>
   const moved = await movedOnP;
   check('sync: author transform reaches partner', moved && moved.id === 't3' && moved.points[0] === 20);
 
-  sockP.emit('stroke-transform', { id: 't3', points: [0, 0, 1, 1] }); // Percy's transform → ignored
-  await sleep(400);
+  // shared canvas: Percy's transform of Abi's shape applies
+  const movedByP = once(sockA, 'stroke-transform');
+  sockP.emit('stroke-transform', { id: 't3', points: [0, 0, 1, 1] });
+  const movedP = await movedByP;
   const sockD = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie: cookie } });
   const stateD = await once(sockD, 'canvas-state');
   const t3 = stateD.strokes.find((x) => x.id === 't3');
-  check('authz: partner cannot transform your shape', t3 && t3.points[0] === 20);
+  check('shared: partner can transform your shape', movedP && movedP.id === 't3' && t3 && t3.points[0] === 0);
   sockD.close();
 
   const txt = { id: 't4', tool: 'text', color: '#ffffff', size: 8, text: 'hi', x: 50, y: 50 };
@@ -185,17 +187,20 @@ const once = (sock, ev, timeout = 4000) =>
   const tm = await txtMoved;
   check('sync: text move/resize reaches partner', tm && tm.id === 't4' && tm.x === 70 && tm.size === 12);
 
-  sockP.emit('stroke-delete', { id: 't4' }); // Percy's delete → ignored
-  await sleep(400);
+  // shared canvas: partner can move/resize your text
+  const txtMovedByP = once(sockA, 'stroke-transform');
+  sockP.emit('stroke-transform', { id: 't4', x: 90, y: 100, size: 14 });
+  const tmp = await txtMovedByP;
+  check('shared: partner can move/resize your text', tmp && tmp.id === 't4' && tmp.x === 90 && tmp.size === 14);
+
+  // shared canvas: partner can delete your shape
+  const deletedOnA = once(sockA, 'stroke-remove');
+  sockP.emit('stroke-delete', { id: 't4' });
+  const pdel = await deletedOnA;
   const sockE = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie: cookie } });
   const stateE = await once(sockE, 'canvas-state');
-  check('authz: partner cannot delete your shape', stateE.strokes.some((x) => x.id === 't4'));
+  check('shared: partner can delete your shape', pdel && pdel.id === 't4' && !stateE.strokes.some((x) => x.id === 't4'));
   sockE.close();
-
-  const deletedOnP = once(sockP, 'stroke-remove');
-  sockA.emit('stroke-delete', { id: 't4' });
-  const del = await deletedOnP;
-  check('sync: author delete removes shape for partner', del && del.id === 't4');
 
   // transform of a pen stroke is rejected (not selectable)
   const penMoved = once(sockP, 'stroke-transform');

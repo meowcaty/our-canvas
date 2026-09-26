@@ -94,10 +94,25 @@
 <!-- ============ CANVAS ============ -->
 <div id="screen-canvas" class="screen hidden">
   <canvas id="board"></canvas>
+
+  <!-- playful loading overlay while the canvas is being fetched -->
+  <div id="canvas-loader" class="canvas-loader hidden">
+    <div class="loader-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5L8 21l-5 1 1-5L14.5 4.5z"/><path d="M13 6l5 5"/></svg>
+    </div>
+    <div class="loader-dots"><span></span><span></span><span></span></div>
+    <p class="loader-text">Preparing your canvas…</p>
+  </div>
+
   <div id="brush-ring"></div>
 
   <div id="topbar" class="glass">
-    <span class="app-title">Our Canvas</span>
+    <div class="top-left">
+      <span class="app-title">Our Canvas</span>
+      <div id="conn-pill" class="conn-pill connecting" title="Server connection">
+        <span class="conn-dot"></span><span id="conn-text">Connecting…</span>
+      </div>
+    </div>
     <div class="top-actions">
       <button id="btn-theme" class="pill-btn" title="appearance">
         <svg id="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.5A8 8 0 1110.5 4 6.5 6.5 0 0020 13.5z"/></svg>
