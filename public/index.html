@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#000000">
 <title>Our Canvas</title>
 <link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 <script>
   // theme before first paint (no flash)
   try {
@@ -20,7 +21,9 @@
 <!-- ============ LOCK ============ -->
 <div id="screen-lock" class="screen hidden">
   <div class="lock-card">
-    <div class="app-icon">🎨</div>
+    <div class="app-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5L8 21l-5 1 1-5L14.5 4.5z"/><path d="M13 6l5 5"/></svg>
+    </div>
     <h1>Our Canvas</h1>
     <p class="subtitle">For Abi &amp; Percy — nobody else.</p>
     <div id="lock-form">
@@ -29,7 +32,7 @@
       <p id="lock-hint" class="hint"></p>
     </div>
     <div id="lock-blocked" class="hidden">
-      <p class="blocked-title">🚫 This device is blocked</p>
+      <p class="blocked-title">This device is blocked</p>
       <p id="blocked-msg" class="hint"></p>
     </div>
     <p id="lock-error" class="error"></p>
@@ -39,7 +42,9 @@
 <!-- ============ NAME (one time) ============ -->
 <div id="screen-name" class="screen hidden">
   <div class="lock-card">
-    <div class="app-icon">👋</div>
+    <div class="app-icon alt">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21a8 8 0 00-16 0"/><circle cx="12" cy="8" r="4.5"/></svg>
+    </div>
     <h1>Hey, you.</h1>
     <p class="subtitle">What should we call you? Just this once.</p>
     <input id="inp-myname" type="text" maxlength="16" placeholder="Your name" autocomplete="off" enterkeyhint="done">
@@ -51,15 +56,27 @@
 <!-- ============ CANVAS ============ -->
 <div id="screen-canvas" class="screen hidden">
   <canvas id="board"></canvas>
+  <div id="brush-ring"></div>
 
   <div id="topbar" class="glass">
     <span class="app-title">Our Canvas</span>
     <div class="top-actions">
-      <button id="btn-theme" class="pill-btn" title="appearance">🌙</button>
-      <button id="btn-undo" class="pill-btn" title="undo">↩</button>
-      <button id="btn-redo" class="pill-btn" title="redo">↪</button>
-      <button id="btn-clear" class="pill-btn" title="clear">🗑</button>
-      <button id="btn-lock" class="pill-btn" title="lock">🔒</button>
+      <button id="btn-theme" class="pill-btn" title="appearance">
+        <svg id="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.5A8 8 0 1110.5 4 6.5 6.5 0 0020 13.5z"/></svg>
+        <svg id="ic-sun" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>
+      </button>
+      <button id="btn-undo" class="pill-btn" title="undo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h9.5a5.5 5.5 0 010 11H11"/></svg>
+      </button>
+      <button id="btn-redo" class="pill-btn" title="redo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9h-9.5a5.5 5.5 0 000 11H13"/></svg>
+      </button>
+      <button id="btn-clear" class="pill-btn" title="clear">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2"/><path d="M6.5 7l1 12a1 1 0 001 1h7a1 1 0 001-1l1-12"/><path d="M10 11v6M14 11v6"/></svg>
+      </button>
+      <button id="btn-lock" class="pill-btn" title="lock">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 018 0v3"/></svg>
+      </button>
     </div>
   </div>
 
@@ -67,17 +84,39 @@
 
   <div id="toolbar" class="glass">
     <div id="tools-row" class="tools-row">
-      <button class="tool active" data-tool="pen" title="Pen">🖊</button>
-      <button class="tool" data-tool="pencil" title="Pencil">✏</button>
-      <button class="tool" data-tool="marker" title="Marker">🖍</button>
-      <button class="tool" data-tool="highlighter" title="Highlighter">🖌</button>
-      <button class="tool" data-tool="neon" title="Neon glow">💡</button>
-      <button class="tool" data-tool="eraser" title="Eraser">🧽</button>
-      <button class="tool" data-tool="line" title="Line">📏</button>
-      <button class="tool" data-tool="rect" title="Rectangle">▢</button>
-      <button class="tool" data-tool="circle" title="Circle">○</button>
-      <button class="tool" data-tool="text" title="Text">T</button>
-      <button class="tool" data-tool="pan" title="Move">✋</button>
+      <button class="tool active" data-tool="pen" title="Pen">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2c3 4 5 8 5 11a5 5 0 01-10 0c0-3 2-7 5-11z"/><circle cx="12" cy="13" r="1.3"/><path d="M12 14.3v3.2"/></svg>
+      </button>
+      <button class="tool" data-tool="pencil" title="Pencil">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+      </button>
+      <button class="tool" data-tool="marker" title="Marker">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 20l1.5-5L16 4.5a2.1 2.1 0 013 3L8.5 18 4 20z"/></svg>
+      </button>
+      <button class="tool" data-tool="highlighter" title="Highlighter">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path fill="currentColor" stroke="none" d="M5 18.5l1.2-3.8L13.6 7.3a1.8 1.8 0 012.6 2.6l-7.4 7.4-3.8 1.2z"/><path d="M3 21.5h10"/></svg>
+      </button>
+      <button class="tool" data-tool="neon" title="Neon glow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 21.5h4"/><path d="M12 3a6 6 0 00-3.5 10.9c.8.6 1.5 1.4 1.5 2.6h4c0-1.2.7-2 1.5-2.6A6 6 0 0012 3z"/></svg>
+      </button>
+      <button class="tool" data-tool="eraser" title="Eraser">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5L13 8l5.5 5.5L12 20H7l-2.5-2.5v-1z"/><path d="M10.5 5.5l4 4"/></svg>
+      </button>
+      <button class="tool" data-tool="line" title="Line">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 17.5L17.5 6.5"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/></svg>
+      </button>
+      <button class="tool" data-tool="rect" title="Rectangle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="11" rx="2"/></svg>
+      </button>
+      <button class="tool" data-tool="circle" title="Circle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/></svg>
+      </button>
+      <button class="tool" data-tool="text" title="Text">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7V5h14v2"/><path d="M12 5v14"/><path d="M9 19h6"/></svg>
+      </button>
+      <button class="tool" data-tool="pan" title="Move">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><path d="M12 2L9.5 4.5M12 2l2.5 2.5M12 22l-2.5-2.5M12 22l2.5-2.5M2 12l2.5-2.5M2 12l2.5 2.5M22 12l-2.5-2.5M22 12l-2.5 2.5"/></svg>
+      </button>
     </div>
     <div class="controls-row">
       <div id="colors-row" class="colors-row"></div>

@@ -3,6 +3,7 @@
 'use strict';
 
 const $ = (s) => document.querySelector(s);
+const G = window.gsap || null; // animations degrade gracefully if the CDN is blocked
 const api = async (path, opts = {}) => {
   const res = await fetch(path, {
     ...opts,
@@ -18,7 +19,8 @@ function currentTheme() { return document.documentElement.dataset.theme || 'dark
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem('ourcanvas_theme', t); } catch {}
-  $('#btn-theme').textContent = t === 'dark' ? '🌙' : '☀️';
+  $('#ic-moon').classList.toggle('hidden', t !== 'dark');
+  $('#ic-sun').classList.toggle('hidden', t !== 'light');
   document.querySelector('meta[name="theme-color"]').content = t === 'dark' ? '#000000' : '#f2f2f7';
   refreshThemeColors();
   // keep the default ink readable when the theme flips
@@ -48,18 +50,26 @@ async function boot() {
   }
 }
 
+function showOnly(id) {
+  for (const s of ['screen-lock', 'screen-name', 'screen-canvas']) {
+    $('#' + s).classList.toggle('hidden', s !== id);
+  }
+  if (G) {
+    const card = document.querySelector('#' + id + ' .lock-card');
+    if (card) G.fromTo(card, { y: 26, opacity: 0, scale: .98 }, { y: 0, opacity: 1, scale: 1, duration: .7, ease: 'power3.out' });
+  }
+}
 function showLockScreen() {
-  $('#screen-lock').classList.remove('hidden');
-  $('#screen-name').classList.add('hidden');
-  $('#screen-canvas').classList.add('hidden');
+  showOnly('screen-lock');
   setTimeout(() => $('#inp-password').focus(), 100);
 }
 function showNameScreen() {
-  $('#screen-lock').classList.add('hidden');
-  $('#screen-name').classList.remove('hidden');
-  $('#screen-canvas').classList.add('hidden');
+  showOnly('screen-name');
   if (myName) $('#inp-myname').value = myName;
   setTimeout(() => $('#inp-myname').focus(), 100);
+}
+function shakeCard() {
+  if (G) G.fromTo('#screen-lock .lock-card', { x: 0 }, { x: -12, duration: .06, repeat: 5, yoyo: true, clearProps: 'x', ease: 'power1.inOut' });
 }
 
 $('#btn-unlock').onclick = doUnlock;
@@ -78,6 +88,7 @@ async function doUnlock() {
     $('#lock-blocked').classList.remove('hidden');
     $('#blocked-msg').textContent = r.error;
   } else {
+    shakeCard();
     const left = r.remaining > 0 ? ` · ${r.remaining} attempt${r.remaining === 1 ? '' : 's'} left` : '';
     $('#lock-error').textContent = (r.error || 'Wrong password') + left;
     $('#lock-hint').textContent = r.remaining <= 1 ? 'Careful — 3 wrong tries blocks this device for 24h.' : '';
@@ -117,10 +128,14 @@ const PALETTE = ['#ffffff', '#1c1c1e', '#ff2d55', '#ff7a59', '#ff9f0a', '#ffcc00
   '#30d158', '#0a84ff', '#bf5af2', '#64d2ff', '#ff6482', '#ac8e68'];
 
 function enterCanvas() {
-  $('#screen-lock').classList.add('hidden');
-  $('#screen-name').classList.add('hidden');
-  $('#screen-canvas').classList.remove('hidden');
+  showOnly('screen-canvas');
   resize();
+  updateRing();
+  if (G) {
+    G.fromTo('#topbar', { y: -34, opacity: 0 }, { y: 0, opacity: 1, duration: .6, ease: 'power3.out', delay: .05 });
+    G.fromTo('#toolbar', { y: 70, opacity: 0 }, { y: 0, opacity: 1, duration: .65, ease: 'power3.out', delay: .15 });
+    G.fromTo('#toolbar .tool', { scale: 0, opacity: 0 }, { scale: 1, opacity: 1, duration: .45, ease: 'back.out(1.8)', stagger: .035, delay: .3, clearProps: 'scale,opacity' });
+  }
   if (!socket) connectSocket();
 }
 
@@ -157,18 +172,21 @@ function tracePath(s) {
 }
 
 function drawStroke(s) {
+  // A real eraser: paints the canvas background back over ink.
+  // (destination-out would punch transparent holes that smudge on theme change.)
+  const C = s.tool === 'eraser' ? themeColors.bg : s.color;
   ctx.save();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
 
   if (s.tool === 'text') {
-    ctx.fillStyle = s.color;
+    ctx.fillStyle = C;
     ctx.font = `${s.size * 2.2}px -apple-system, "SF Pro Text", sans-serif`;
     ctx.fillText(s.text, s.x, s.y);
     ctx.restore();
     return;
   }
   if (s.tool === 'line' || s.tool === 'rect' || s.tool === 'circle') {
-    ctx.strokeStyle = s.color; ctx.lineWidth = s.size; ctx.globalAlpha = 1;
+    ctx.strokeStyle = C; ctx.lineWidth = s.size; ctx.globalAlpha = 1;
     const [x1, y1, x2, y2] = s.points;
     ctx.beginPath();
     if (s.tool === 'line') { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
@@ -179,11 +197,10 @@ function drawStroke(s) {
     return;
   }
 
-  if (s.tool === 'eraser') ctx.globalCompositeOperation = 'destination-out';
   if (!s.points || s.points.length < 2) { ctx.restore(); return; }
 
   if (s.points.length < 4) { // tap = dot
-    ctx.fillStyle = s.tool === 'eraser' ? '#000' : s.color;
+    ctx.fillStyle = C;
     ctx.globalAlpha = s.tool === 'highlighter' ? 0.32 : 1;
     ctx.beginPath();
     ctx.arc(s.points[0], s.points[1], (s.size * (s.tool === 'eraser' ? 2.2 : 1)) / 2, 0, Math.PI * 2);
@@ -193,12 +210,12 @@ function drawStroke(s) {
   }
 
   const passes = s.tool === 'neon'
-    ? [[3.2, 0.20, s.color], [1.8, 0.45, s.color], [1.0, 1, s.color], [0.45, 0.9, '#ffffff']]
-    : s.tool === 'pencil'   ? [[0.55, 0.7, s.color]]
-    : s.tool === 'marker'   ? [[1.7, 0.95, s.color]]
-    : s.tool === 'highlighter' ? [[2.8, 0.32, s.color]]
-    : s.tool === 'eraser'   ? [[2.2, 1, '#000']]
-    : [[1.0, 1, s.color]];
+    ? [[3.2, 0.20, C], [1.8, 0.45, C], [1.0, 1, C], [0.45, 0.9, '#ffffff']]
+    : s.tool === 'pencil'   ? [[0.55, 0.7, C]]
+    : s.tool === 'marker'   ? [[1.7, 0.95, C]]
+    : s.tool === 'highlighter' ? [[2.8, 0.32, C]]
+    : s.tool === 'eraser'   ? [[2.2, 1, C]]
+    : [[1.0, 1, C]];
 
   for (const [wm, alpha, col] of passes) {
     ctx.globalAlpha = alpha;
@@ -307,10 +324,12 @@ canvas.addEventListener('pointerdown', (e) => {
 
 canvas.addEventListener('pointermove', (e) => {
   sendCursor(e.clientX, e.clientY);
-  if (!pointers.has(e.pointerId)) return;
+  if (!pointers.has(e.pointerId)) { moveRing(e.clientX, e.clientY); return; }
   pointers.set(e.pointerId, { sx: e.clientX, sy: e.clientY });
+  moveRing(e.clientX, e.clientY);
 
   if (pinch && pointers.size >= 2) {
+    hideRing();
     const [a, b] = [...pointers.values()];
     const d = Math.hypot(a.sx - b.sx, a.sy - b.sy);
     const mx = (a.sx + b.sx) / 2, my = (a.sy + b.sy) / 2;
@@ -321,6 +340,7 @@ canvas.addEventListener('pointermove', (e) => {
     cam.x -= (mx - pinch.mx) / cam.zoom; cam.y -= (my - pinch.my) / cam.zoom;
     pinch.mx = mx; pinch.my = my;
     dirty = true;
+    updateRing();
     return;
   }
 
@@ -379,6 +399,7 @@ function endPointer(e) {
 }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('pointerleave', hideRing);
 
 let cursorTimer = 0;
 function sendCursor(sx, sy) {
@@ -419,6 +440,8 @@ document.querySelectorAll('.tool').forEach((btn) => {
     btn.classList.add('active');
     tool = btn.dataset.tool;
     canvas.style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
+    if (G) G.fromTo(btn, { scale: .8 }, { scale: 1, duration: .38, ease: 'back.out(2.5)', clearProps: 'scale' });
+    updateRing();
     dirty = true;
   };
 });
@@ -447,7 +470,26 @@ customWrap.querySelector('input').oninput = (e) => {
 };
 colorsRow.appendChild(customWrap);
 
-$('#inp-size').oninput = (e) => { brushSize = Number(e.target.value); };
+$('#inp-size').oninput = (e) => { brushSize = Number(e.target.value); updateRing(); };
+
+/* ---------- brush cursor ring (desktop) ---------- */
+const ring = $('#brush-ring');
+const finePointer = matchMedia('(pointer:fine)').matches;
+const RING_TOOLS = ['pen', 'pencil', 'marker', 'highlighter', 'neon', 'eraser', 'line', 'rect', 'circle'];
+function updateRing() {
+  if (!finePointer) return;
+  const show = RING_TOOLS.includes(tool);
+  const d = Math.max(10, Math.min(220, brushSize * cam.zoom * (tool === 'eraser' ? 2.2 : 1)));
+  ring.style.width = ring.style.height = d + 'px';
+  ring.classList.toggle('eraser', tool === 'eraser');
+  ring.dataset.show = show ? '1' : '';
+}
+function moveRing(x, y) {
+  if (!finePointer || !ring.dataset.show) return;
+  ring.style.opacity = '1';
+  ring.style.transform = `translate(${x}px, ${y}px) translate(-50%,-50%)`;
+}
+function hideRing() { ring.style.opacity = '0'; }
 
 /* ================= top bar ================= */
 $('#btn-theme').onclick = () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
@@ -484,8 +526,27 @@ function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
   t.classList.remove('hidden');
+  if (G) {
+    G.killTweensOf(t);
+    G.fromTo(t, { y: 14, opacity: 0 }, { y: 0, opacity: 1, duration: .35, ease: 'power3.out' });
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add('hidden'), 2200);
+  toastTimer = setTimeout(() => {
+    if (G) G.to(t, { opacity: 0, y: 8, duration: .3, ease: 'power2.in', onComplete: () => t.classList.add('hidden') });
+    else t.classList.add('hidden');
+  }, 2200);
+}
+function peerToast(msg) {
+  const el = $('#peer-toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  if (G) {
+    G.killTweensOf(el);
+    G.fromTo(el, { y: -14, opacity: 0 }, { y: 0, opacity: 1, duration: .4, ease: 'back.out(1.6)' });
+    G.to(el, { opacity: 0, y: -10, duration: .3, delay: 2.2, onComplete: () => el.classList.add('hidden') });
+  } else {
+    setTimeout(() => el.classList.add('hidden'), 2500);
+  }
 }
 
 /* ================= socket ================= */
@@ -534,10 +595,7 @@ function connectSocket() {
   });
   socket.on('peer-join', ({ id, name, color: c }) => {
     peers.set(id, { name, color: c, last: 0 });
-    const el = $('#peer-toast');
-    el.textContent = `${name} is here 💞`;
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 2500);
+    peerToast(`${name} is here 💞`);
   });
   socket.on('peer-leave', ({ id }) => { peers.delete(id); dirty = true; });
 }
