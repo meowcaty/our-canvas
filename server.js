@@ -265,4 +265,14 @@ async function main() {
   });
 }
 
+// graceful shutdown (Render redeploys): flush the debounced save first,
+// so the last ~1.5s of drawing is never lost to a restart
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, async () => {
+    try { await store.flushSave(); await db.close(); }
+    catch (e) { console.error('shutdown flush failed:', e.message); }
+    finally { process.exit(0); }
+  });
+}
+
 main().catch((e) => { console.error('boot failed:', e.message); process.exit(1); });
