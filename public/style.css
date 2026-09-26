@@ -207,6 +207,23 @@ html, body {
 }
 .otp-row .otp:focus { transform: scale(1.05); }
 
+/* digit masks to • with a subtle pop, iOS-style */
+@keyframes otpPop { 0% { transform: scale(1.14); } 100% { transform: scale(1); } }
+.otp-row .otp.mask-pop { animation: otpPop .18s ease; }
+
+/* eye toggle under the OTP row */
+.otp-tools { display: flex; justify-content: center; margin: 2px 0 2px; }
+.eye-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: transparent; border: none; cursor: pointer;
+  color: #8e8e93;
+  transition: transform .15s ease, color .15s ease, background .15s ease;
+}
+.eye-btn:active { transform: scale(.86); }
+.eye-btn.on { color: #0a84ff; background: rgba(10,132,255,.12); }
+.eye-btn svg { width: 22px; height: 22px; }
+
 /* bottom-sheet style confirm dialog */
 .sheet-wrap {
   position: fixed; inset: 0; z-index: 90;

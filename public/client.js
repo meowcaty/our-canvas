@@ -73,41 +73,101 @@ function shakeEl(sel) {
 function shakeCard() { shakeEl('#screen-lock .lock-card'); }
 
 /* 8-digit OTP entry — auto-advances, auto-submits when complete.
+   iOS-style privacy: each digit shows briefly, then masks to • with a subtle
+   pop. An eye toggle reveals the digits as plain numbers.
+   Digits live in dataset.d; the visible value may be masked, so value()
+   reads the dataset, never the display text.
    Reusable: wireOtpBoxes(container, onComplete) -> {value, clear}. */
+const MASK_DELAY = 650;
 function wireOtpBoxes(container, onComplete) {
   const inputs = [...container.querySelectorAll('.otp')];
+  const eyeBtn = container.parentElement.querySelector('.eye-btn');
   let busy = false;
+  let revealed = false;
+  const timers = new Map();
+
+  const cancelMask = (inp) => {
+    const t = timers.get(inp);
+    if (t) { clearTimeout(t); timers.delete(inp); }
+  };
+  const maskDigit = (inp) => {
+    cancelMask(inp);
+    if (!inp.dataset.d) { inp.value = ''; return; }
+    if (revealed) { inp.value = inp.dataset.d; return; }
+    inp.value = '•';
+    inp.classList.remove('mask-pop');
+    void inp.offsetWidth; // restart the pop animation
+    inp.classList.add('mask-pop');
+  };
+  const scheduleMask = (inp) => {
+    cancelMask(inp);
+    if (!revealed && inp.dataset.d) timers.set(inp, setTimeout(() => maskDigit(inp), MASK_DELAY));
+  };
+  const setDigit = (inp, ch) => {
+    cancelMask(inp);
+    inp.classList.remove('mask-pop');
+    if (ch) { inp.dataset.d = ch; inp.value = ch; scheduleMask(inp); }
+    else { delete inp.dataset.d; inp.value = ''; }
+  };
+
   const box = {
-    value: () => inputs.map((i) => i.value).join(''),
+    value: () => inputs.map((i) => i.dataset.d || '').join(''),
     clear(focusFirst = true) {
-      inputs.forEach((i) => { i.value = ''; });
+      inputs.forEach((i) => { cancelMask(i); delete i.dataset.d; i.value = ''; i.classList.remove('mask-pop'); });
       busy = false;
       if (focusFirst && inputs[0]) inputs[0].focus();
     },
   };
   const maybeDone = () => {
-    if (!busy && inputs.every((i) => i.value)) {
+    if (!busy && inputs.every((i) => i.dataset.d)) {
       busy = true;
+      // mask everything right away so no digit lingers on screen while we wait
+      inputs.forEach(maskDigit);
       onComplete(box.value(), box);
     }
   };
+  const refreshEye = () => {
+    if (!eyeBtn) return;
+    eyeBtn.classList.toggle('on', revealed);
+    eyeBtn.setAttribute('aria-label', revealed ? 'Hide password' : 'Show password');
+    eyeBtn.setAttribute('aria-pressed', revealed ? 'true' : 'false');
+    const eye = eyeBtn.querySelector('.ic-eye'), eyeOff = eyeBtn.querySelector('.ic-eye-off');
+    if (eye) eye.classList.toggle('hidden', revealed);
+    if (eyeOff) eyeOff.classList.toggle('hidden', !revealed);
+  };
+  if (eyeBtn) {
+    refreshEye();
+    eyeBtn.addEventListener('click', () => {
+      revealed = !revealed;
+      inputs.forEach((inp) => { cancelMask(inp); if (inp.dataset.d) inp.value = revealed ? inp.dataset.d : '•'; });
+      refreshEye();
+      const firstEmpty = inputs.find((i) => !i.dataset.d);
+      (firstEmpty || inputs[inputs.length - 1]).focus();
+    });
+  }
+
   inputs.forEach((inp, idx) => {
     inp.addEventListener('input', () => {
-      inp.value = inp.value.replace(/\D/g, '').slice(-1);
-      if (inp.value && idx < inputs.length - 1) inputs[idx + 1].focus();
+      // value may currently be the '•' mask — strip it before reading the new digit
+      const ch = inp.value.replace(/•/g, '').replace(/\D/g, '').slice(-1);
+      setDigit(inp, ch);
+      if (ch && idx < inputs.length - 1) inputs[idx + 1].focus();
       maybeDone();
     });
     inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Backspace' && !inp.value && idx > 0) {
-        e.preventDefault();
-        inputs[idx - 1].value = '';
+      if (e.key !== 'Backspace') return;
+      e.preventDefault();
+      if (inp.dataset.d) {
+        setDigit(inp, ''); // filled (maybe masked): clear this box, stay put
+      } else if (idx > 0) {
+        setDigit(inputs[idx - 1], ''); // empty: step back and clear the previous box
         inputs[idx - 1].focus();
       }
     });
     inp.addEventListener('paste', (e) => {
       e.preventDefault();
       const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, inputs.length);
-      digits.split('').forEach((ch, k) => { if (inputs[idx + k]) inputs[idx + k].value = ch; });
+      digits.split('').forEach((ch, k) => { if (inputs[idx + k]) setDigit(inputs[idx + k], ch); });
       inputs[Math.min(idx + digits.length, inputs.length - 1)].focus();
       maybeDone();
     });
@@ -230,6 +290,10 @@ function drawStroke(s) {
   if (s.tool === 'text') {
     ctx.fillStyle = C;
     ctx.font = `${s.size * 2.2}px -apple-system, "SF Pro Text", sans-serif`;
+    // Pin the baseline explicitly: glyphs hang below (s.x, s.y).
+    // (Previously this relied on leftover context state from the peer-name
+    //  labels, which also made the selection box disagree with the render.)
+    ctx.textBaseline = 'top';
     ctx.fillText(s.text, s.x, s.y);
     ctx.restore();
     return;
@@ -381,8 +445,10 @@ function textMetrics(s) {
 }
 function shapeBBox(s) {
   if (s.tool === 'text') {
+    // Must match drawStroke: textBaseline 'top' means the em box starts at
+    // (s.x, s.y) and glyphs extend downward — not above the point.
     const { w, h } = textMetrics(s);
-    return { x: s.x, y: s.y - h * 0.82, w, h };
+    return { x: s.x, y: s.y, w, h };
   }
   const [x1, y1, x2, y2] = s.points;
   return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };

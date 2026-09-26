@@ -16,7 +16,7 @@
   "name": "our-canvas",
   "scripts": {
     "start": "node server.js",
-    "test": "node scripts/simulate.js"
+    "test": "node scripts/simulate.js && node scripts/text-geometry-test.js && node scripts/otp-boxes-test.js"
   },
   "version": "1.0.0"
 }
