@@ -238,6 +238,7 @@ function enterCanvas() {
   showOnly('screen-canvas');
   resize();
   updateRing();
+  maybeShowToolHint();
   if (G) {
     G.fromTo('#topbar', { y: -34, opacity: 0 }, { y: 0, opacity: 1, duration: .6, ease: 'power3.out', delay: .05 });
     G.fromTo('#toolbar', { y: 70, opacity: 0 }, { y: 0, opacity: 1, duration: .65, ease: 'power3.out', delay: .15 });
@@ -926,9 +927,78 @@ $('#btn-text-ok').onclick = () => {
   dirty = true;
 };
 
+/* ============ smart tool labels: no permanent labels, zero clutter ============
+   - long-press any tool → its name pops up above it (always available)
+   - tapping a tool flashes its name until you've used it 3 times, then stops
+   - one-time hint on first canvas visit */
+const toolTipEl = $('#tool-tip');
+const toolFlashEl = $('#tool-flash');
+let tipBtn = null;
+function showToolTip(btn) {
+  const r = btn.getBoundingClientRect();
+  toolTipEl.textContent = btn.title || btn.dataset.tool;
+  toolTipEl.classList.remove('hidden');
+  toolTipEl.style.left = (r.left + r.width / 2) + 'px';
+  toolTipEl.style.top = (r.top - 10) + 'px';
+  if (G) G.fromTo(toolTipEl, { x: '-50%', y: '-100%', scale: .8, opacity: 0 }, { x: '-50%', y: '-100%', scale: 1, opacity: 1, duration: .25, ease: 'back.out(2)' });
+  else { toolTipEl.style.transform = 'translate(-50%,-100%)'; toolTipEl.style.opacity = '1'; }
+  tipBtn = btn;
+}
+function hideToolTip() {
+  if (!tipBtn) return;
+  tipBtn = null;
+  if (G) G.to(toolTipEl, { opacity: 0, scale: .85, duration: .18, onComplete: () => toolTipEl.classList.add('hidden') });
+  else { toolTipEl.style.opacity = '0'; toolTipEl.classList.add('hidden'); }
+}
+
+let toolSeenCounts = {};
+try { toolSeenCounts = JSON.parse(localStorage.getItem('oc-tool-seen') || '{}'); } catch (_) { toolSeenCounts = {}; }
+function flashToolName(btn) {
+  const key = btn.dataset.tool;
+  const n = (toolSeenCounts[key] || 0) + 1;
+  toolSeenCounts[key] = n;
+  try { localStorage.setItem('oc-tool-seen', JSON.stringify(toolSeenCounts)); } catch (_) {}
+  if (n > 3) return; // you know this one — no more captions
+  toolFlashEl.textContent = btn.title || key;
+  toolFlashEl.classList.remove('hidden');
+  if (G) {
+    G.killTweensOf(toolFlashEl);
+    G.fromTo(toolFlashEl, { x: '-50%', opacity: 0, y: 8 }, { x: '-50%', opacity: 1, y: 0, duration: .25, ease: 'power2.out' });
+    G.to(toolFlashEl, { opacity: 0, y: -6, duration: .3, delay: 1.1, onComplete: () => toolFlashEl.classList.add('hidden') });
+  } else {
+    toolFlashEl.style.opacity = '1';
+    setTimeout(() => { toolFlashEl.style.opacity = '0'; toolFlashEl.classList.add('hidden'); }, 1200);
+  }
+}
+
+function maybeShowToolHint() {
+  let seen = null;
+  try { seen = localStorage.getItem('oc-hints-seen'); } catch (_) {}
+  if (seen) return false;
+  try { localStorage.setItem('oc-hints-seen', '1'); } catch (_) {}
+  setTimeout(() => toast('Tip: press & hold any tool to see its name ✨'), 1500);
+  return true;
+}
+
 /* ================= toolbar ================= */
 document.querySelectorAll('.tool').forEach((btn) => {
+  let lpTimer = null, lpFired = false;
+  btn.addEventListener('pointerdown', () => {
+    lpFired = false;
+    clearTimeout(lpTimer);
+    lpTimer = setTimeout(() => {
+      lpFired = true;
+      showToolTip(btn);
+      if (navigator.vibrate) { try { navigator.vibrate(8); } catch (_) {} }
+    }, 450);
+  });
+  const cancelLp = () => { clearTimeout(lpTimer); hideToolTip(); };
+  btn.addEventListener('pointerup', cancelLp);
+  btn.addEventListener('pointercancel', cancelLp);
+  btn.addEventListener('pointerleave', cancelLp);
   btn.onclick = () => {
+    clearTimeout(lpTimer); hideToolTip();
+    if (lpFired) { lpFired = false; return; } // was a peek, not a pick
     endActiveStroke();
     previewShape = null; shapeStart = null; gesture = null;
     document.querySelectorAll('.tool').forEach((b) => b.classList.remove('active'));
@@ -938,6 +1008,7 @@ document.querySelectorAll('.tool').forEach((btn) => {
     canvas.style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
     if (G) G.fromTo(btn, { scale: .8 }, { scale: 1, duration: .38, ease: 'back.out(2.5)', clearProps: 'scale' });
     updateRing();
+    flashToolName(btn);
     dirty = true;
   };
 });

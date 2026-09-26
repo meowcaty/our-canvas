@@ -16,7 +16,7 @@
   "name": "our-canvas",
   "scripts": {
     "start": "node server.js",
-    "test": "node scripts/simulate.js && node scripts/text-geometry-test.js && node scripts/otp-boxes-test.js && node scripts/persistence-flush-test.js && node scripts/reconnect-reload-test.js"
+    "test": "node scripts/simulate.js && node scripts/text-geometry-test.js && node scripts/otp-boxes-test.js && node scripts/persistence-flush-test.js && node scripts/reconnect-reload-test.js && node scripts/tool-labels-test.js"
   },
   "version": "1.0.0"
 }
