@@ -11,6 +11,33 @@ async function loadCanvas() {
   return [];
 }
 
+// lastEdit: {x, y} of the most recent NON-delete change (draw / add / move /
+// resize), or null. Deletes never move it — if the last action was a delete,
+// it still points at the change before that. Centered on canvas open.
+let lastEdit = null;
+function setLastEdit(p) {
+  lastEdit = p && Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : null;
+}
+function getLastEdit() { return lastEdit; }
+async function loadLastEdit() {
+  try {
+    const data = await db.getDoc('canvas', null);
+    const p = data && data.lastEdit;
+    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return { x: p.x, y: p.y };
+  } catch (e) {
+    console.error('lastEdit load failed:', e.message);
+  }
+  return null;
+}
+
+async function writeDoc(strokes) {
+  try {
+    await db.setDoc('canvas', { strokes, lastEdit, updatedAt: new Date().toISOString() });
+  } catch (e) {
+    console.error('canvas save failed:', e.message);
+  }
+}
+
 let saveTimer = null;
 let pendingStrokes = null;
 function scheduleSave(strokes) {
@@ -27,11 +54,7 @@ async function flushSave() {
   if (!pendingStrokes) return;
   const strokes = pendingStrokes;
   pendingStrokes = null;
-  try {
-    await db.setDoc('canvas', { strokes, updatedAt: new Date().toISOString() });
-  } catch (e) {
-    console.error('canvas save failed:', e.message);
-  }
+  await writeDoc(strokes);
 }
 
-module.exports = { loadCanvas, scheduleSave, flushSave };
+module.exports = { loadCanvas, loadLastEdit, setLastEdit, getLastEdit, scheduleSave, flushSave };

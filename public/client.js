@@ -683,6 +683,8 @@ function endActiveStroke() {
 canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { sx: e.clientX, sy: e.clientY });
+  // user takes over — stop the open-framing glide
+  if (frameTween) { frameTween.kill(); frameTween = null; }
 
   if (pointers.size === 2) {
     if (gesture && (gesture.kind === 'move-sel' || gesture.kind === 'resize-sel') && gesture.s) finalizeTransform(gesture.s);
@@ -1149,6 +1151,49 @@ function peerToast(msg) {
   }
 }
 
+/* ============ open framing: fit everything, center on last edit ============
+   On first load: zoom out to fit all content (never past 1x, never below
+   the pinch minimum) and center on the last non-delete edit. Empty canvas
+   keeps the default 1x view at the origin. */
+let hasFramed = false, frameTween = null;
+function contentBounds() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const s of strokes.values()) {
+    if (s.tool === 'text') {
+      const { w, h } = textMetrics(s);
+      if (s.x < x0) x0 = s.x; if (s.y < y0) y0 = s.y;
+      if (s.x + w > x1) x1 = s.x + w; if (s.y + h > y1) y1 = s.y + h;
+    } else if (Array.isArray(s.points) && s.points.length >= 2) {
+      const pad = (s.size || 8) / 2;
+      for (let i = 0; i + 1 < s.points.length; i += 2) {
+        const x = s.points[i], y = s.points[i + 1];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x - pad < x0) x0 = x - pad; if (y - pad < y0) y0 = y - pad;
+        if (x + pad > x1) x1 = x + pad; if (y + pad > y1) y1 = y + pad;
+      }
+    }
+  }
+  return x0 === Infinity ? null : { x0, y0, x1, y1 };
+}
+function frameOnLoad(lastEdit) {
+  const b = contentBounds();
+  if (!b) return;
+  const w = Math.max(1, b.x1 - b.x0), h = Math.max(1, b.y1 - b.y0);
+  const z = Math.min(1, Math.max(0.2, Math.min(cssW / w, cssH / h) * 0.92));
+  let cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+  if (lastEdit && Number.isFinite(lastEdit.x) && Number.isFinite(lastEdit.y)) { cx = lastEdit.x; cy = lastEdit.y; }
+  if (frameTween) { frameTween.kill(); frameTween = null; }
+  if (G) {
+    frameTween = G.to(cam, {
+      x: cx, y: cy, zoom: z, duration: .8, ease: 'power3.out',
+      onUpdate: () => { dirty = true; },
+      onComplete: () => { frameTween = null; dirty = true; },
+    });
+  } else {
+    cam.x = cx; cam.y = cy; cam.zoom = z; dirty = true;
+  }
+}
+
 /* ================= socket: tuned for minimum latency ================= */
 // reconnect → full page reload: the simplest bulletproof resync.
 // the HttpOnly session cookie survives, so we land straight back on the canvas.
@@ -1182,13 +1227,14 @@ function connectSocket() {
     if (err && /unauthorized/i.test(err.message || '')) { setTimeout(() => location.reload(), 800); return; }
     setConn('connecting');
   });
-  socket.on('canvas-state', ({ strokes: list, me, peers: peerList }) => {
+  socket.on('canvas-state', ({ strokes: list, lastEdit, me, peers: peerList }) => {
     hideLoader();
     strokes.clear();
     for (const s of list) strokes.set(s.id, s);
     peers.clear();
     for (const p of peerList) peers.set(p.id, { ...p, x: p.x || 0, y: p.y || 0, tx: p.x || 0, ty: p.y || 0, last: 0 });
     deselect();
+    if (!hasFramed) { hasFramed = true; frameOnLoad(lastEdit); }
     dirty = true;
     if (me && me.name) toast(`Welcome back, ${me.name} 💕`);
   });

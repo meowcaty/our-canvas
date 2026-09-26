@@ -27,6 +27,27 @@ const clients = new Map(); // socketId -> {name, color, sessionId}
 /* ---------- helpers ---------- */
 const isSecureReq = (req) => req.secure || req.headers['x-forwarded-proto'] === 'https';
 
+// center point of a stroke, for the "last edit" viewport anchor
+function strokeCenter(s) {
+  if (!s) return null;
+  if (s.tool === 'text') {
+    if (Number.isFinite(s.x) && Number.isFinite(s.y)) return { x: s.x, y: s.y };
+    return null;
+  }
+  if (Array.isArray(s.points) && s.points.length >= 2) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i + 1 < s.points.length; i += 2) {
+      const x = s.points[i], y = s.points[i + 1];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < x0) x0 = x; if (y < y0) y0 = y;
+      if (x > x1) x1 = x; if (y > y1) y1 = y;
+    }
+    if (x0 === Infinity) return null;
+    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+  }
+  return null;
+}
+
 function sanitizeStroke(s, authorId, authorName) {
   if (!s || typeof s !== 'object') return null;
   const tool = String(s.tool || 'pen');
@@ -134,6 +155,7 @@ async function main() {
   const { backend } = await db.init();
   await auth.initAuth();
   const strokes = await store.loadCanvas();
+  store.setLastEdit(await store.loadLastEdit());
   console.log(`\u{1F3A8} loaded ${strokes.length} strokes via ${backend}`);
 
   io.on('connection', (socket) => {
@@ -147,6 +169,7 @@ async function main() {
 
     socket.emit('canvas-state', {
       strokes,
+      lastEdit: store.getLastEdit(),
       me: { name, color },
       peers: [...clients.entries()]
         .filter(([id]) => id !== socket.id)
@@ -185,6 +208,8 @@ async function main() {
       if (!c) return;
       const stroke = strokes.find((x) => x.id === id);
       if (!stroke || stroke.authorId !== c.authorId) return;
+      const ctr = strokeCenter(stroke);
+      if (ctr) store.setLastEdit(ctr);
       store.scheduleSave(strokes);
       socket.broadcast.emit('stroke-end', { id });
     });
@@ -196,6 +221,8 @@ async function main() {
       if (!stroke || strokes.length >= MAX_STROKES) return;
       if (strokes.some((x) => x.id === stroke.id)) return;
       strokes.push(stroke);
+      const ctr = strokeCenter(stroke);
+      if (ctr) store.setLastEdit(ctr);
       store.scheduleSave(strokes);
       io.emit('stroke-add', stroke);
     });
@@ -226,6 +253,8 @@ async function main() {
         patch.points = points.map((n) => Math.max(-1e6, Math.min(1e6, n)));
       } else return;
       Object.assign(stroke, patch);
+      const ctr = strokeCenter(stroke);
+      if (ctr) store.setLastEdit(ctr);
       store.scheduleSave(strokes);
       socket.broadcast.emit('stroke-transform', { id, ...patch });
     });
@@ -244,6 +273,7 @@ async function main() {
     socket.on('canvas-clear', () => {
       if (!clients.get(socket.id)) return;
       strokes.length = 0;
+      store.setLastEdit(null);
       store.scheduleSave(strokes);
       io.emit('canvas-clear');
     });
