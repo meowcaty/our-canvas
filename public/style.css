@@ -181,6 +181,20 @@ html, body {
 }
 .text-btns { display: flex; gap: 8px; }
 
+/* floating delete button for the selection (Apple-style) */
+.delete-btn {
+  position: fixed; z-index: 60;
+  width: 34px; height: 34px; border-radius: 50%;
+  background: rgba(255,255,255,.92);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,.22), 0 0 0 .5px rgba(0,0,0,.08);
+  transition: transform .18s ease;
+}
+.delete-btn:active { transform: scale(.88); }
+[data-theme="dark"] .delete-btn { background: rgba(44,44,46,.92); box-shadow: 0 4px 16px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12); }
+
 .toast {
   position: absolute; bottom: 210px; left: 50%; transform: translateX(-50%);
   background: var(--glass);

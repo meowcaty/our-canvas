@@ -194,6 +194,36 @@ io.on('connection', (socket) => {
     io.emit('stroke-remove', { id });
   });
 
+  // live move/resize of shapes & text — author only
+  socket.on('stroke-transform', ({ id, points, x, y, size }) => {
+    const c = clients.get(socket.id);
+    if (!c) return;
+    const stroke = strokes.find((s) => s.id === id);
+    if (!stroke || stroke.authorId !== c.authorId) return;
+    if (!['line', 'rect', 'circle', 'text'].includes(stroke.tool)) return;
+    const patch = {};
+    if (stroke.tool === 'text') {
+      if (Number.isFinite(x) && Number.isFinite(y)) { patch.x = Math.max(-1e6, Math.min(1e6, x)); patch.y = Math.max(-1e6, Math.min(1e6, y)); }
+      const ns = Number(size);
+      if (Number.isFinite(ns)) patch.size = Math.min(200, Math.max(4, ns));
+    } else if (Array.isArray(points) && points.length === 4 && points.every(Number.isFinite)) {
+      patch.points = points.map((n) => Math.max(-1e6, Math.min(1e6, n)));
+    } else return;
+    Object.assign(stroke, patch);
+    scheduleSave(strokes);
+    socket.broadcast.emit('stroke-transform', { id, ...patch });
+  });
+
+  socket.on('stroke-delete', ({ id }) => {
+    const c = clients.get(socket.id);
+    if (!c) return;
+    const i = strokes.findIndex((x) => x.id === id);
+    if (i < 0 || strokes[i].authorId !== c.authorId) return;
+    strokes.splice(i, 1);
+    scheduleSave(strokes);
+    io.emit('stroke-remove', { id });
+  });
+
   socket.on('canvas-clear', () => {
     if (!clients.get(socket.id)) return;
     strokes.length = 0;
