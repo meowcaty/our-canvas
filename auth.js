@@ -151,8 +151,17 @@ function _reset() {
   persistSoon('bans');
 }
 
-function sessionCookie(token, secure) {
-  const parts = [`canvas_session=${token}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${SESSION_MS / 1000}`];
+/* Socket gate decision: 'ok' | 'banned' | 'unauthorized'.
+   A valid session always passes — it already proves password knowledge.
+   The 24h ban exists to stop password guessing, not to lock out an
+   authenticated user whose IP got banned (fat-fingered code, shared Wi-Fi).
+   So the ban only bites sockets with no valid session. */
+function checkSocketAccess(ip, token) {
+  if (getSession(token)) return 'ok';
+  return isBanned(ip) ? 'banned' : 'unauthorized';
+}
+
+function sessionCookie(token, secure) {  const parts = [`canvas_session=${token}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${SESSION_MS / 1000}`];
   if (secure) parts.push('Secure');
   return parts.join('; ');
 }
@@ -170,7 +179,7 @@ function parseCookies(header) {
 module.exports = {
   initPassword, initAuth, verifyPassword,
   createSession, getSession, setSessionName, destroySession,
-  getIp, getSocketIp, isBanned, banInfo, recordAttempt,
+  getIp, getSocketIp, isBanned, banInfo, recordAttempt, checkSocketAccess,
   sessionCookie, parseCookies, tokenHash,
   MAX_FAILS, BAN_MS,
   _reset,

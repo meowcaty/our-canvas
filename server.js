@@ -149,11 +149,12 @@ app.post('/api/confirm-password', (req, res) => {
 /* ---------- sockets: session required ---------- */
 io.use((socket, next) => {
   const ip = auth.getSocketIp(socket.handshake);
-  if (auth.isBanned(ip)) return next(new Error('banned'));
   const token = auth.parseCookies(socket.handshake.headers.cookie).canvas_session;
-  const sess = auth.getSession(token);
-  if (!sess) return next(new Error('unauthorized'));
-  socket.data.sessionId = auth.parseCookies(socket.handshake.headers.cookie).canvas_session;
+  // checkSocketAccess: a valid session always passes (it already proves
+  // password knowledge); the 24h ban only stops unauthenticated sockets.
+  const decision = auth.checkSocketAccess(ip, token);
+  if (decision !== 'ok') return next(new Error(decision));
+  socket.data.sessionId = token;
   socket.data.ip = ip;
   next();
 });
