@@ -23,9 +23,9 @@ let PASS_SALT = null;
 
 function initPassword() {
   const pw = process.env.CANVAS_PASSWORD;
-  if (!pw || pw.length < 8) {
-    throw new Error('CANVAS_PASSWORD env var must be set (min 8 characters). ' +
-      'Set it in your Render dashboard → Environment, or export CANVAS_PASSWORD=... locally.');
+  if (!pw || !/^\d{8}$/.test(pw)) {
+    throw new Error('CANVAS_PASSWORD env var must be an 8-digit number. ' +
+      'Set it in your Render dashboard → Environment, or export CANVAS_PASSWORD=<redacted> locally.');
   }
   PASS_SALT = crypto.randomBytes(16);
   PASS_HASH = crypto.scryptSync(pw, PASS_SALT, 32);

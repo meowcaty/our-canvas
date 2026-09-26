@@ -24,11 +24,17 @@
     <div class="app-icon">
       <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4.5l5 5L8 21l-5 1 1-5L14.5 4.5z"/><path d="M13 6l5 5"/></svg>
     </div>
-    <h1>Our Canvas</h1>
-    <p class="subtitle">For Abi &amp; Percy — nobody else.</p>
     <div id="lock-form">
-      <input id="inp-password" type="password" placeholder="Password" autocomplete="current-password" enterkeyhint="go">
-      <button id="btn-unlock" class="btn-accent">Unlock</button>
+      <div id="otp-row" class="otp-row">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 1">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 2">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 3">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 4">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 5">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 6">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 7">
+        <input class="otp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Digit 8" enterkeyhint="go">
+      </div>
       <p id="lock-hint" class="hint"></p>
     </div>
     <div id="lock-blocked" class="hidden">

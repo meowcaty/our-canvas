@@ -7,7 +7,7 @@ Built with **Node + Express + Socket.IO**, mobile-first, Apple-inspired UI.
 
 1. Set the password once as an env var:
    ```bash
-   export CANVAS_PASSWORD="your-strong-password"  # min 8 chars
+   export CANVAS_PASSWORD="your-strong-password"  # 8-digit number
    npm install
    npm start
    # → http://localhost:3000
@@ -42,7 +42,7 @@ Built with **Node + Express + Socket.IO**, mobile-first, Apple-inspired UI.
 
 `render.yaml` is included — or manually: **New + → Web Service** → connect the repo →
 Runtime **Node**, Build `npm install`, **Start `node server.js`**, plan **Free**,
-then add the `CANVAS_PASSWORD` env var in **Dashboard → Environment** (min 8 chars).
+then add the `CANVAS_PASSWORD` env var in **Dashboard → Environment** (8-digit number).
 
 > ⚠️ Render's free tier has an ephemeral filesystem — drawings persist across sleeps but are
 > wiped on redeploys. For truly permanent storage, back `data/` up or wire the store up to Postgres.

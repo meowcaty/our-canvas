@@ -60,7 +60,7 @@ function showOnly(id) {
 }
 function showLockScreen() {
   showOnly('screen-lock');
-  setTimeout(() => $('#inp-password').focus(), 100);
+  setTimeout(() => otpInputs[0] && otpInputs[0].focus(), 100);
 }
 function showNameScreen() {
   showOnly('screen-name');
@@ -71,14 +71,47 @@ function shakeCard() {
   if (G) G.fromTo('#screen-lock .lock-card', { x: 0 }, { x: -12, duration: .06, repeat: 5, yoyo: true, clearProps: 'x', ease: 'power1.inOut' });
 }
 
-$('#btn-unlock').onclick = doUnlock;
-$('#inp-password').addEventListener('keydown', (e) => { if (e.key === 'Enter') doUnlock(); });
+/* 8-digit OTP entry — auto-advances, auto-submits when complete */
+const otpInputs = [...document.querySelectorAll('.otp')];
+let unlocking = false;
+function otpValue() { return otpInputs.map((i) => i.value).join(''); }
+function clearOtp(focusFirst = true) {
+  otpInputs.forEach((i) => { i.value = ''; });
+  if (focusFirst && otpInputs[0]) otpInputs[0].focus();
+}
+otpInputs.forEach((inp, idx) => {
+  inp.addEventListener('input', () => {
+    inp.value = inp.value.replace(/\D/g, '').slice(-1);
+    if (inp.value && idx < otpInputs.length - 1) otpInputs[idx + 1].focus();
+    if (!unlocking && otpInputs.every((i) => i.value)) doUnlock();
+  });
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Backspace' && !inp.value && idx > 0) {
+      e.preventDefault();
+      otpInputs[idx - 1].value = '';
+      otpInputs[idx - 1].focus();
+    }
+  });
+  inp.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 8);
+    digits.split('').forEach((ch, k) => { if (otpInputs[idx + k]) otpInputs[idx + k].value = ch; });
+    otpInputs[Math.min(idx + digits.length, otpInputs.length - 1)].focus();
+    if (!unlocking && otpInputs.every((i) => i.value)) doUnlock();
+  });
+  inp.addEventListener('focus', () => inp.select());
+});
+
 async function doUnlock() {
-  const pw = $('#inp-password').value;
+  if (unlocking) return;
+  const pw = otpValue();
+  if (pw.length !== 8) return;
+  unlocking = true;
   $('#lock-error').textContent = '';
   const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ password: pw }) });
+  unlocking = false;
   if (r.ok) {
-    $('#inp-password').value = '';
+    clearOtp(false);
     const me = await api('/api/me');
     if (me.ok && me.name) { myName = me.name; enterCanvas(); }
     else showNameScreen();
@@ -88,6 +121,7 @@ async function doUnlock() {
     $('#blocked-msg').textContent = r.error;
   } else {
     shakeCard();
+    clearOtp();
     const left = r.remaining > 0 ? ` · ${r.remaining} attempt${r.remaining === 1 ? '' : 's'} left` : '';
     $('#lock-error').textContent = (r.error || 'Wrong password') + left;
     $('#lock-hint').textContent = r.remaining <= 1 ? 'Careful — 3 wrong tries blocks this device for 24h.' : '';

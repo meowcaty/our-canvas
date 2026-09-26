@@ -196,6 +196,17 @@ html, body {
 .delete-btn:active { transform: scale(.88); }
 [data-theme="dark"] .delete-btn { background: rgba(44,44,46,.92); box-shadow: 0 4px 16px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12); }
 
+/* 8-digit OTP entry */
+.otp-row { display: flex; gap: 7px; justify-content: center; margin: 4px 0 6px; }
+.otp-row .otp {
+  flex: 1 1 0; min-width: 0; max-width: 46px; height: 56px;
+  margin: 0; padding: 0;
+  font-size: 24px; font-weight: 600; text-align: center;
+  caret-color: transparent;
+  transition: box-shadow .15s ease, transform .15s ease;
+}
+.otp-row .otp:focus { transform: scale(1.05); }
+
 .toast {
   position: absolute; bottom: 210px; left: 50%; transform: translateX(-50%);
   background: var(--glass);

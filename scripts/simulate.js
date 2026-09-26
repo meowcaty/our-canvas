@@ -1,6 +1,6 @@
 // Tests Our Canvas: password auth, 3-strike IP ban, sessions, sync, undo, persistence.
-// Run: CANVAS_PASSWORD=test-password-123 TEST_PORT=3456 node scripts/simulate.js
-process.env.CANVAS_PASSWORD = process.env.CANVAS_PASSWORD || 'test-password-123';
+// Run: CANVAS_PASSWORD=<redacted> TEST_PORT=3456 node scripts/simulate.js
+process.env.CANVAS_PASSWORD = process.env.CANVAS_PASSWORD || '48261573';
 const TEST_PORT = Number(process.env.TEST_PORT || 3456);
 process.env.PORT = TEST_PORT;
 
