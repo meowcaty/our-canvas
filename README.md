@@ -16,6 +16,21 @@ Built with **Node + Express + Socket.IO**, mobile-first, Apple-inspired UI.
 3. Enter your name **once** — it's remembered from then on.
 4. Draw together. 💕
 
+## Persistence (survives redeploys)
+
+By default everything lives in `./data` as JSON files — fine for local dev, but
+**Render's free filesystem is wiped on every redeploy**. For permanent storage:
+
+1. Create a free [Neon](https://neon.tech) account → new project → copy the connection string.
+2. In Render: **Dashboard → your service → Environment** → add `DATABASE_URL` = that string.
+3. Redeploy. The server logs `🎨 loaded N strokes via postgres` on boot.
+
+That's it — canvas, sessions and bans move to one tiny Postgres table (`kv_store`).
+Neon's free tier is 0.5 GB (your canvas is a few MB — effectively infinite for two
+people), needs no credit card, and never deletes idle projects. If `DATABASE_URL`
+is set but unreachable, the app refuses to boot rather than silently writing to
+disk that gets wiped.
+
 ## Security
 
 - The password lives only in the `CANVAS_PASSWORD` env var (never in code or the client) and is verified with scrypt + constant-time comparison.
@@ -36,16 +51,15 @@ Built with **Node + Express + Socket.IO**, mobile-first, Apple-inspired UI.
   - 🖊️ Pen · ✏️ Pencil · 🖍️ Marker · 🖌️ Highlighter · 💡 Neon glow · 🧽 Eraser
   - 📏 Line · ▢ Rectangle · ○ Circle · T Text · ✋ Pan
   - 12-color palette + custom color picker, brush size slider
-- **Undo / redo** (your own strokes — survives reconnects), clear canvas (with confirm)
+- **Undo / redo** (your own strokes — survives reconnects), clear canvas (password-gated)
 
 ## Deploy to Render
 
 `render.yaml` is included — or manually: **New + → Web Service** → connect the repo →
 Runtime **Node**, Build `npm install`, **Start `node server.js`**, plan **Free**,
 then add the `CANVAS_PASSWORD` env var in **Dashboard → Environment** (8-digit number).
-
-> ⚠️ Render's free tier has an ephemeral filesystem — drawings persist across sleeps but are
-> wiped on redeploys. For truly permanent storage, back `data/` up or wire the store up to Postgres.
+For permanent storage also add `DATABASE_URL` (see Persistence above) — otherwise
+drawings are wiped on redeploy.
 
 ## Test it
 

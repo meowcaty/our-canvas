@@ -3,10 +3,11 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
-const { loadCanvas, scheduleSave } = require('./store');
+const db = require('./db');
+const store = require('./store');
 const auth = require('./auth');
 
-auth.initPassword(); // throws if CANVAS_PASSWORD is missing/weak
+auth.initPassword(); // throws if CANVAS_PASSWORD is missing/not 8 digits
 
 const app = express();
 app.set('trust proxy', 1); // Render sits behind a proxy — needed for real client IPs
@@ -21,8 +22,6 @@ const MAX_STROKES = 20000;
 const MAX_POINTS_PER_STROKE = 8000;
 const CURSOR_COLORS = ['#ff2d55', '#0a84ff', '#ff9f0a', '#30d158', '#bf5af2', '#ff6482'];
 
-const strokes = loadCanvas();
-console.log(`🎨 loaded ${strokes.length} strokes from disk`);
 const clients = new Map(); // socketId -> {name, color, sessionId}
 
 /* ---------- helpers ---------- */
@@ -108,6 +107,16 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+/* Password re-check before wiping the canvas. A session already proves
+   password knowledge, so this is purely an anti-accident guard — no ban
+   counting here. */
+app.post('/api/confirm-password', (req, res) => {
+  const token = auth.parseCookies(req.headers.cookie).canvas_session;
+  if (!auth.getSession(token)) return res.status(401).json({ ok: false });
+  if (auth.verifyPassword(req.body && req.body.password)) return res.json({ ok: true });
+  res.status(401).json({ ok: false, error: 'Wrong password' });
+});
+
 /* ---------- sockets: session required ---------- */
 io.use((socket, next) => {
   const ip = auth.getSocketIp(socket.handshake);
@@ -120,129 +129,139 @@ io.use((socket, next) => {
   next();
 });
 
-io.on('connection', (socket) => {
-  const token = auth.parseCookies(socket.handshake.headers.cookie).canvas_session;
-  const sess = auth.getSession(token);
-  const name = (sess && sess.name) || 'Guest';
-  const color = CURSOR_COLORS[clients.size % CURSOR_COLORS.length];
-  // stable author id from the session token — survives reconnects, so undo keeps working
-  const authorId = 'u:' + auth.tokenHash(token).slice(0, 16);
-  clients.set(socket.id, { name, color, authorId });
+/* ---------- boot: storage first, then sockets ---------- */
+async function main() {
+  const { backend } = await db.init();
+  await auth.initAuth();
+  const strokes = await store.loadCanvas();
+  console.log(`\u{1F3A8} loaded ${strokes.length} strokes via ${backend}`);
 
-  socket.emit('canvas-state', {
-    strokes,
-    me: { name, color },
-    peers: [...clients.entries()]
-      .filter(([id]) => id !== socket.id)
-      .map(([id, c]) => ({ id, name: c.name, color: c.color })),
+  io.on('connection', (socket) => {
+    const token = auth.parseCookies(socket.handshake.headers.cookie).canvas_session;
+    const sess = auth.getSession(token);
+    const name = (sess && sess.name) || 'Guest';
+    const color = CURSOR_COLORS[clients.size % CURSOR_COLORS.length];
+    // stable author id from the session token — survives reconnects, so undo keeps working
+    const authorId = 'u:' + auth.tokenHash(token).slice(0, 16);
+    clients.set(socket.id, { name, color, authorId });
+
+    socket.emit('canvas-state', {
+      strokes,
+      me: { name, color },
+      peers: [...clients.entries()]
+        .filter(([id]) => id !== socket.id)
+        .map(([id, c]) => ({ id, name: c.name, color: c.color })),
+    });
+    socket.broadcast.emit('peer-join', { id: socket.id, name, color });
+
+    socket.on('stroke-start', (s) => {
+      const c = clients.get(socket.id);
+      if (!c) return;
+      const stroke = sanitizeStroke(s, c.authorId, c.name);
+      if (!stroke || strokes.length >= MAX_STROKES) return;
+      if (strokes.some((x) => x.id === stroke.id)) return;
+      strokes.push(stroke);
+      socket.broadcast.emit('stroke-start', stroke);
+    });
+
+    socket.on('stroke-point', ({ id, points }) => {
+      const c = clients.get(socket.id);
+      if (!c) return;
+      const stroke = strokes.find((x) => x.id === id);
+      if (!stroke || stroke.authorId !== c.authorId || !Array.isArray(points)) return;
+      const clean = [];
+      for (let i = 0; i + 1 < points.length && stroke.points.length + clean.length < MAX_POINTS_PER_STROKE * 2; i += 2) {
+        const x = Number(points[i]), y = Number(points[i + 1]);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        clean.push(Math.max(-1e6, Math.min(1e6, x)), Math.max(-1e6, Math.min(1e6, y)));
+      }
+      if (!clean.length) return;
+      stroke.points.push(...clean);
+      socket.broadcast.emit('stroke-point', { id, points: clean });
+    });
+
+    socket.on('stroke-end', ({ id }) => {
+      const c = clients.get(socket.id);
+      if (!c) return;
+      const stroke = strokes.find((x) => x.id === id);
+      if (!stroke || stroke.authorId !== c.authorId) return;
+      store.scheduleSave(strokes);
+      socket.broadcast.emit('stroke-end', { id });
+    });
+
+    socket.on('stroke-add', (s) => {
+      const c = clients.get(socket.id);
+      if (!c) return;
+      const stroke = sanitizeStroke(s, c.authorId, c.name);
+      if (!stroke || strokes.length >= MAX_STROKES) return;
+      if (strokes.some((x) => x.id === stroke.id)) return;
+      strokes.push(stroke);
+      store.scheduleSave(strokes);
+      io.emit('stroke-add', stroke);
+    });
+
+    socket.on('stroke-undo', ({ id }) => {
+      const c = clients.get(socket.id);
+      if (!c) return;
+      const i = strokes.findIndex((x) => x.id === id);
+      if (i < 0 || strokes[i].authorId !== c.authorId) return;
+      strokes.splice(i, 1);
+      store.scheduleSave(strokes);
+      io.emit('stroke-remove', { id });
+    });
+
+    // live move/resize of shapes & text — author only
+    socket.on('stroke-transform', ({ id, points, x, y, size }) => {
+      const c = clients.get(socket.id);
+      if (!c) return;
+      const stroke = strokes.find((s) => s.id === id);
+      if (!stroke || stroke.authorId !== c.authorId) return;
+      if (!['line', 'rect', 'circle', 'text'].includes(stroke.tool)) return;
+      const patch = {};
+      if (stroke.tool === 'text') {
+        if (Number.isFinite(x) && Number.isFinite(y)) { patch.x = Math.max(-1e6, Math.min(1e6, x)); patch.y = Math.max(-1e6, Math.min(1e6, y)); }
+        const ns = Number(size);
+        if (Number.isFinite(ns)) patch.size = Math.min(200, Math.max(4, ns));
+      } else if (Array.isArray(points) && points.length === 4 && points.every(Number.isFinite)) {
+        patch.points = points.map((n) => Math.max(-1e6, Math.min(1e6, n)));
+      } else return;
+      Object.assign(stroke, patch);
+      store.scheduleSave(strokes);
+      socket.broadcast.emit('stroke-transform', { id, ...patch });
+    });
+
+    socket.on('stroke-delete', ({ id }) => {
+      const c = clients.get(socket.id);
+      if (!c) return;
+      const i = strokes.findIndex((x) => x.id === id);
+      if (i < 0 || strokes[i].authorId !== c.authorId) return;
+      strokes.splice(i, 1);
+      store.scheduleSave(strokes);
+      io.emit('stroke-remove', { id });
+    });
+
+    socket.on('canvas-clear', () => {
+      if (!clients.get(socket.id)) return;
+      strokes.length = 0;
+      store.scheduleSave(strokes);
+      io.emit('canvas-clear');
+    });
+
+    socket.on('cursor', ({ x, y }) => {
+      const c = clients.get(socket.id);
+      if (!c || !Number.isFinite(x) || !Number.isFinite(y)) return;
+      socket.broadcast.emit('peer-cursor', { id: socket.id, name: c.name, color: c.color, x, y });
+    });
+
+    socket.on('disconnect', () => {
+      clients.delete(socket.id);
+      socket.broadcast.emit('peer-leave', { id: socket.id });
+    });
   });
-  socket.broadcast.emit('peer-join', { id: socket.id, name, color });
 
-  socket.on('stroke-start', (s) => {
-    const c = clients.get(socket.id);
-    if (!c) return;
-    const stroke = sanitizeStroke(s, c.authorId, c.name);
-    if (!stroke || strokes.length >= MAX_STROKES) return;
-    if (strokes.some((x) => x.id === stroke.id)) return;
-    strokes.push(stroke);
-    socket.broadcast.emit('stroke-start', stroke);
+  server.listen(PORT, () => {
+    console.log(`🎨 Our Canvas — http://localhost:${PORT}`);
   });
+}
 
-  socket.on('stroke-point', ({ id, points }) => {
-    const c = clients.get(socket.id);
-    if (!c) return;
-    const stroke = strokes.find((x) => x.id === id);
-    if (!stroke || stroke.authorId !== c.authorId || !Array.isArray(points)) return;
-    const clean = [];
-    for (let i = 0; i + 1 < points.length && stroke.points.length + clean.length < MAX_POINTS_PER_STROKE * 2; i += 2) {
-      const x = Number(points[i]), y = Number(points[i + 1]);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      clean.push(Math.max(-1e6, Math.min(1e6, x)), Math.max(-1e6, Math.min(1e6, y)));
-    }
-    if (!clean.length) return;
-    stroke.points.push(...clean);
-    socket.broadcast.emit('stroke-point', { id, points: clean });
-  });
-
-  socket.on('stroke-end', ({ id }) => {
-    const c = clients.get(socket.id);
-    if (!c) return;
-    const stroke = strokes.find((x) => x.id === id);
-    if (!stroke || stroke.authorId !== c.authorId) return;
-    scheduleSave(strokes);
-    socket.broadcast.emit('stroke-end', { id });
-  });
-
-  socket.on('stroke-add', (s) => {
-    const c = clients.get(socket.id);
-    if (!c) return;
-    const stroke = sanitizeStroke(s, c.authorId, c.name);
-    if (!stroke || strokes.length >= MAX_STROKES) return;
-    if (strokes.some((x) => x.id === stroke.id)) return;
-    strokes.push(stroke);
-    scheduleSave(strokes);
-    io.emit('stroke-add', stroke);
-  });
-
-  socket.on('stroke-undo', ({ id }) => {
-    const c = clients.get(socket.id);
-    if (!c) return;
-    const i = strokes.findIndex((x) => x.id === id);
-    if (i < 0 || strokes[i].authorId !== c.authorId) return;
-    strokes.splice(i, 1);
-    scheduleSave(strokes);
-    io.emit('stroke-remove', { id });
-  });
-
-  // live move/resize of shapes & text — author only
-  socket.on('stroke-transform', ({ id, points, x, y, size }) => {
-    const c = clients.get(socket.id);
-    if (!c) return;
-    const stroke = strokes.find((s) => s.id === id);
-    if (!stroke || stroke.authorId !== c.authorId) return;
-    if (!['line', 'rect', 'circle', 'text'].includes(stroke.tool)) return;
-    const patch = {};
-    if (stroke.tool === 'text') {
-      if (Number.isFinite(x) && Number.isFinite(y)) { patch.x = Math.max(-1e6, Math.min(1e6, x)); patch.y = Math.max(-1e6, Math.min(1e6, y)); }
-      const ns = Number(size);
-      if (Number.isFinite(ns)) patch.size = Math.min(200, Math.max(4, ns));
-    } else if (Array.isArray(points) && points.length === 4 && points.every(Number.isFinite)) {
-      patch.points = points.map((n) => Math.max(-1e6, Math.min(1e6, n)));
-    } else return;
-    Object.assign(stroke, patch);
-    scheduleSave(strokes);
-    socket.broadcast.emit('stroke-transform', { id, ...patch });
-  });
-
-  socket.on('stroke-delete', ({ id }) => {
-    const c = clients.get(socket.id);
-    if (!c) return;
-    const i = strokes.findIndex((x) => x.id === id);
-    if (i < 0 || strokes[i].authorId !== c.authorId) return;
-    strokes.splice(i, 1);
-    scheduleSave(strokes);
-    io.emit('stroke-remove', { id });
-  });
-
-  socket.on('canvas-clear', () => {
-    if (!clients.get(socket.id)) return;
-    strokes.length = 0;
-    scheduleSave(strokes);
-    io.emit('canvas-clear');
-  });
-
-  socket.on('cursor', ({ x, y }) => {
-    const c = clients.get(socket.id);
-    if (!c || !Number.isFinite(x) || !Number.isFinite(y)) return;
-    socket.broadcast.emit('peer-cursor', { id: socket.id, name: c.name, color: c.color, x, y });
-  });
-
-  socket.on('disconnect', () => {
-    clients.delete(socket.id);
-    socket.broadcast.emit('peer-leave', { id: socket.id });
-  });
-});
-
-server.listen(PORT, () => {
-  console.log(`🎨 Our Canvas — http://localhost:${PORT}`);
-});
+main().catch((e) => { console.error('boot failed:', e.message); process.exit(1); });

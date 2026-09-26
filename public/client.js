@@ -60,58 +60,70 @@ function showOnly(id) {
 }
 function showLockScreen() {
   showOnly('screen-lock');
-  setTimeout(() => otpInputs[0] && otpInputs[0].focus(), 100);
+  setTimeout(() => { try { lockOtp.clear(); } catch {} }, 100);
 }
 function showNameScreen() {
   showOnly('screen-name');
   if (myName) $('#inp-myname').value = myName;
   setTimeout(() => $('#inp-myname').focus(), 100);
 }
-function shakeCard() {
-  if (G) G.fromTo('#screen-lock .lock-card', { x: 0 }, { x: -12, duration: .06, repeat: 5, yoyo: true, clearProps: 'x', ease: 'power1.inOut' });
+function shakeEl(sel) {
+  if (G) G.fromTo(sel, { x: 0 }, { x: -12, duration: .06, repeat: 5, yoyo: true, clearProps: 'x', ease: 'power1.inOut' });
 }
+function shakeCard() { shakeEl('#screen-lock .lock-card'); }
 
-/* 8-digit OTP entry — auto-advances, auto-submits when complete */
-const otpInputs = [...document.querySelectorAll('.otp')];
-let unlocking = false;
-function otpValue() { return otpInputs.map((i) => i.value).join(''); }
-function clearOtp(focusFirst = true) {
-  otpInputs.forEach((i) => { i.value = ''; });
-  if (focusFirst && otpInputs[0]) otpInputs[0].focus();
-}
-otpInputs.forEach((inp, idx) => {
-  inp.addEventListener('input', () => {
-    inp.value = inp.value.replace(/\D/g, '').slice(-1);
-    if (inp.value && idx < otpInputs.length - 1) otpInputs[idx + 1].focus();
-    if (!unlocking && otpInputs.every((i) => i.value)) doUnlock();
-  });
-  inp.addEventListener('keydown', (e) => {
-    if (e.key === 'Backspace' && !inp.value && idx > 0) {
-      e.preventDefault();
-      otpInputs[idx - 1].value = '';
-      otpInputs[idx - 1].focus();
+/* 8-digit OTP entry — auto-advances, auto-submits when complete.
+   Reusable: wireOtpBoxes(container, onComplete) -> {value, clear}. */
+function wireOtpBoxes(container, onComplete) {
+  const inputs = [...container.querySelectorAll('.otp')];
+  let busy = false;
+  const box = {
+    value: () => inputs.map((i) => i.value).join(''),
+    clear(focusFirst = true) {
+      inputs.forEach((i) => { i.value = ''; });
+      busy = false;
+      if (focusFirst && inputs[0]) inputs[0].focus();
+    },
+  };
+  const maybeDone = () => {
+    if (!busy && inputs.every((i) => i.value)) {
+      busy = true;
+      onComplete(box.value(), box);
     }
+  };
+  inputs.forEach((inp, idx) => {
+    inp.addEventListener('input', () => {
+      inp.value = inp.value.replace(/\D/g, '').slice(-1);
+      if (inp.value && idx < inputs.length - 1) inputs[idx + 1].focus();
+      maybeDone();
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !inp.value && idx > 0) {
+        e.preventDefault();
+        inputs[idx - 1].value = '';
+        inputs[idx - 1].focus();
+      }
+    });
+    inp.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, inputs.length);
+      digits.split('').forEach((ch, k) => { if (inputs[idx + k]) inputs[idx + k].value = ch; });
+      inputs[Math.min(idx + digits.length, inputs.length - 1)].focus();
+      maybeDone();
+    });
+    inp.addEventListener('focus', () => inp.select());
   });
-  inp.addEventListener('paste', (e) => {
-    e.preventDefault();
-    const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 8);
-    digits.split('').forEach((ch, k) => { if (otpInputs[idx + k]) otpInputs[idx + k].value = ch; });
-    otpInputs[Math.min(idx + digits.length, otpInputs.length - 1)].focus();
-    if (!unlocking && otpInputs.every((i) => i.value)) doUnlock();
-  });
-  inp.addEventListener('focus', () => inp.select());
-});
+  return box;
+}
 
-async function doUnlock() {
-  if (unlocking) return;
-  const pw = otpValue();
-  if (pw.length !== 8) return;
-  unlocking = true;
+const lockOtp = wireOtpBoxes($('#otp-row'), (pw) => doUnlock(pw));
+
+async function doUnlock(pw) {
+  if (!pw || pw.length !== 8) { lockOtp.clear(); return; }
   $('#lock-error').textContent = '';
   const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ password: pw }) });
-  unlocking = false;
   if (r.ok) {
-    clearOtp(false);
+    lockOtp.clear(false);
     const me = await api('/api/me');
     if (me.ok && me.name) { myName = me.name; enterCanvas(); }
     else showNameScreen();
@@ -121,7 +133,7 @@ async function doUnlock() {
     $('#blocked-msg').textContent = r.error;
   } else {
     shakeCard();
-    clearOtp();
+    lockOtp.clear();
     const left = r.remaining > 0 ? ` · ${r.remaining} attempt${r.remaining === 1 ? '' : 's'} left` : '';
     $('#lock-error').textContent = (r.error || 'Wrong password') + left;
     $('#lock-hint').textContent = r.remaining <= 1 ? 'Careful — 3 wrong tries blocks this device for 24h.' : '';
@@ -918,13 +930,37 @@ $('#btn-redo').onclick = () => {
   socket.emit('stroke-add', r.stroke);
   dirty = true;
 };
-$('#btn-clear').onclick = () => {
-  if (!confirm('Clear the whole canvas for both of you?')) return;
+$('#btn-clear').onclick = () => showConfirmClear();
+function actuallyClearCanvas() {
   strokes.clear(); myStrokeIds.length = 0; redoStack.length = 0;
   deselect();
   socket.emit('canvas-clear');
   dirty = true;
-};
+  toast('Canvas cleared');
+}
+
+/* password gate before wiping the canvas for both */
+const confirmOtp = wireOtpBoxes($('#confirm-otp-row'), async (pw, box) => {
+  $('#confirm-error').textContent = '';
+  const r = await api('/api/confirm-password', { method: 'POST', body: JSON.stringify({ password: pw }) });
+  if (r.ok) {
+    hideConfirmClear();
+    actuallyClearCanvas();
+  } else {
+    shakeEl('#confirm-card');
+    box.clear();
+    $('#confirm-error').textContent = r.error || 'Wrong password';
+  }
+});
+function showConfirmClear() {
+  $('#confirm-error').textContent = '';
+  $('#confirm-clear').classList.remove('hidden');
+  confirmOtp.clear();
+  if (G) G.fromTo('#confirm-card', { scale: .92, y: 14, opacity: 0 }, { scale: 1, y: 0, opacity: 1, duration: .35, ease: 'back.out(1.6)' });
+}
+function hideConfirmClear() { $('#confirm-clear').classList.add('hidden'); }
+$('#btn-confirm-cancel').onclick = hideConfirmClear;
+$('#confirm-clear').addEventListener('click', (e) => { if (e.target.id === 'confirm-clear') hideConfirmClear(); });
 $('#btn-lock').onclick = async () => {
   await api('/api/logout', { method: 'POST' });
   location.reload();

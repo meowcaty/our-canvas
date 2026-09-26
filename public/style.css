@@ -207,6 +207,20 @@ html, body {
 }
 .otp-row .otp:focus { transform: scale(1.05); }
 
+/* bottom-sheet style confirm dialog */
+.sheet-wrap {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: rgba(0, 0, 0, .45);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.sheet-wrap.hidden { display: none; }
+.sheet { width: 100%; max-width: 340px; border-radius: 24px; padding: 24px 20px 20px; text-align: center; }
+.sheet-title { margin: 0 0 6px; font-size: 20px; font-weight: 700; letter-spacing: -.3px; }
+.sheet .hint { margin: 0 0 14px; }
+.sheet .error { min-height: 20px; margin: 6px 0; }
+.sheet .btn-ghost { margin-top: 4px; width: 100%; }
+
 .toast {
   position: absolute; bottom: 210px; left: 50%; transform: translateX(-50%);
   background: var(--glass);

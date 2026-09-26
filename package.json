@@ -1,1 +1,22 @@
-{"dependencies":{"express":"^5.2.1","socket.io":"^4.8.4"},"description":"Infinite collaborative drawing canvas for two — password-protected rooms, real-time sync, persistent strokes","devDependencies":{"socket.io-client":"^4.8.4"},"engines":{"node":">=20"},"license":"ISC","main":"server.js","name":"our-canvas","scripts":{"start":"node server.js","test":"node scripts/simulate.js"},"version":"1.0.0"}
+{
+  "dependencies": {
+    "express": "^5.2.1",
+    "socket.io": "^4.8.4",
+    "pg": "^8.13.1"
+  },
+  "description": "Infinite collaborative drawing canvas for two \u2014 password-protected rooms, real-time sync, persistent strokes",
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "ISC",
+  "main": "server.js",
+  "name": "our-canvas",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node scripts/simulate.js"
+  },
+  "version": "1.0.0"
+}

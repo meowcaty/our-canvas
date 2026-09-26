@@ -89,6 +89,24 @@ const once = (sock, ev, timeout = 4000) =>
   const nameBody = await nameRes.json();
   check('http: set name once → ok', nameRes.status === 200 && nameBody.name === 'Abi');
 
+  // confirm-password gate (used before wiping the canvas)
+  const cfAnon = await fetch(`http://localhost:${TEST_PORT}/api/confirm-password`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: process.env.CANVAS_PASSWORD }),
+  });
+  check('http: confirm-password without session → 401', cfAnon.status === 401);
+  const cfWrong = await fetch(`http://localhost:${TEST_PORT}/api/confirm-password`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', cookie },
+    body: JSON.stringify({ password: '00000000' }),
+  });
+  check('http: confirm-password wrong pw → 401', cfWrong.status === 401);
+  const cfOk = await fetch(`http://localhost:${TEST_PORT}/api/confirm-password`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', cookie },
+    body: JSON.stringify({ password: process.env.CANVAS_PASSWORD }),
+  });
+  const cfOkBody = await cfOk.json();
+  check('http: confirm-password correct pw → ok', cfOk.status === 200 && cfOkBody.ok === true);
+
   // sockets: authed vs unauthed
   const sockA = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie } });
   const stateA = await once(sockA, 'canvas-state');

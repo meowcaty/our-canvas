@@ -1,33 +1,27 @@
-/* 💾 Persistence — one shared canvas, saved atomically + debounced. */
-const fs = require('fs');
-const path = require('path');
+/* 🖼️ Canvas persistence — debounced whole-document save via db.js. */
+const db = require('./db');
 
-const DATA_DIR = path.join(__dirname, 'data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const CANVAS_PATH = path.join(DATA_DIR, 'canvas.json');
-
-function loadCanvas() {
+async function loadCanvas() {
   try {
-    const data = JSON.parse(fs.readFileSync(CANVAS_PATH, 'utf8'));
+    const data = await db.getDoc('canvas', { strokes: [] });
     if (data && Array.isArray(data.strokes)) return data.strokes;
-  } catch {}
+  } catch (e) {
+    console.error('canvas load failed:', e.message);
+  }
   return [];
 }
 
 let saveTimer = null;
 function scheduleSave(strokes) {
   if (saveTimer) return;
-  saveTimer = setTimeout(() => {
+  saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
-      const tmp = CANVAS_PATH + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify({ strokes, updatedAt: new Date().toISOString() }));
-      fs.renameSync(tmp, CANVAS_PATH);
+      await db.setDoc('canvas', { strokes, updatedAt: new Date().toISOString() });
     } catch (e) {
       console.error('canvas save failed:', e.message);
     }
   }, 1500);
 }
 
-module.exports = { loadCanvas, scheduleSave, DATA_DIR };
+module.exports = { loadCanvas, scheduleSave };

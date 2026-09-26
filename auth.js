@@ -2,16 +2,10 @@
    - Password comes from the CANVAS_PASSWORD env var (never in code or the client).
    - Login issues a random session token in an HttpOnly + Secure + SameSite=Strict cookie.
    - 3 wrong passwords from one IP → banned for 24h (IP + user-agent + timestamps logged).
-   - Sessions and bans persist to disk so restarts don't reset them. */
+   - Sessions and bans persist via db.js (Neon Postgres when DATABASE_URL is set,
+     local JSON files otherwise) so restarts don't reset them. */
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-
-const DATA_DIR = path.join(__dirname, 'data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
-const BANS_PATH = path.join(DATA_DIR, 'bans.json');
+const db = require('./db');
 
 const MAX_FAILS = 3;
 const BAN_MS = Number(process.env.BAN_HOURS || 24) * 3600 * 1000;
@@ -41,29 +35,36 @@ function verifyPassword(pw) {
   }
 }
 
-/* ---------- tiny json persistence ---------- */
-function readJson(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fallback; }
-}
-function writeJson(p, obj) {
-  try {
-    const tmp = p + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(obj));
-    fs.renameSync(tmp, p);
-  } catch (e) { console.error('auth persist failed:', e.message); }
+/* ---------- persistence (debounced; memory is the source of truth) ---------- */
+const persistTimers = {};
+function persistSoon(kind) {
+  if (persistTimers[kind]) return;
+  persistTimers[kind] = setTimeout(async () => {
+    delete persistTimers[kind];
+    try {
+      await db.setDoc(kind, kind === 'sessions' ? sessions : bans);
+    } catch (e) {
+      console.error('auth persist failed:', e.message);
+    }
+  }, 800);
 }
 
 /* ---------- sessions ---------- */
-let sessions = readJson(SESSIONS_PATH, {}); // tokenHash -> {name, createdAt, expiresAt}
+let sessions = {}; // tokenHash -> {name, createdAt, expiresAt}
 function pruneSessions() {
   const now = Date.now();
   let changed = false;
   for (const [k, s] of Object.entries(sessions)) {
     if (s.expiresAt < now) { delete sessions[k]; changed = true; }
   }
-  if (changed) writeJson(SESSIONS_PATH, sessions);
+  if (changed) persistSoon('sessions');
 }
-pruneSessions();
+
+async function initAuth() {
+  sessions = (await db.getDoc('sessions', {})) || {};
+  bans = (await db.getDoc('bans', {})) || {};
+  pruneSessions();
+}
 
 function tokenHash(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
@@ -73,7 +74,7 @@ function createSession() {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
   sessions[tokenHash(token)] = { name: '', createdAt: now, expiresAt: now + SESSION_MS };
-  writeJson(SESSIONS_PATH, sessions);
+  persistSoon('sessions');
   return token;
 }
 
@@ -81,7 +82,7 @@ function getSession(token) {
   if (!token) return null;
   const s = sessions[tokenHash(token)];
   if (!s) return null;
-  if (s.expiresAt < Date.now()) { delete sessions[tokenHash(token)]; writeJson(SESSIONS_PATH, sessions); return null; }
+  if (s.expiresAt < Date.now()) { delete sessions[tokenHash(token)]; persistSoon('sessions'); return null; }
   return s;
 }
 
@@ -89,18 +90,18 @@ function setSessionName(token, name) {
   const s = getSession(token);
   if (!s) return false;
   s.name = String(name || '').trim().slice(0, 16);
-  writeJson(SESSIONS_PATH, sessions);
+  persistSoon('sessions');
   return true;
 }
 
 function destroySession(token) {
   if (!token) return;
   delete sessions[tokenHash(token)];
-  writeJson(SESSIONS_PATH, sessions);
+  persistSoon('sessions');
 }
 
 /* ---------- bans & rate limiting ---------- */
-let bans = readJson(BANS_PATH, {}); // ip -> {fails, firstFail, bannedUntil, ua, log: [{t, ua, ok}]}
+let bans = {}; // ip -> {fails, firstFail, bannedUntil, ua, log: [{t, ua, ok}]}
 
 function getIp(req) {
   // trust proxy is set, so req.ip respects X-Forwarded-For on Render
@@ -138,15 +139,16 @@ function recordAttempt(ip, ua, ok) {
       console.log(`🚫 banned ${ip} for ${BAN_MS / 3600000}h after ${b.fails} failed logins (${b.ua})`);
     }
   }
-  writeJson(BANS_PATH, bans);
+  persistSoon('bans');
   return banInfo(ip);
 }
 
 /* test-only hook */
 function _reset() {
   sessions = {}; bans = {};
-  try { fs.unlinkSync(SESSIONS_PATH); } catch {}
-  try { fs.unlinkSync(BANS_PATH); } catch {}
+  for (const k of Object.keys(persistTimers)) { clearTimeout(persistTimers[k]); delete persistTimers[k]; }
+  persistSoon('sessions');
+  persistSoon('bans');
 }
 
 function sessionCookie(token, secure) {
@@ -166,7 +168,7 @@ function parseCookies(header) {
 }
 
 module.exports = {
-  initPassword, verifyPassword,
+  initPassword, initAuth, verifyPassword,
   createSession, getSession, setSessionName, destroySession,
   getIp, getSocketIp, isBanned, banInfo, recordAttempt,
   sessionCookie, parseCookies, tokenHash,
