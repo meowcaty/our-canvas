@@ -122,6 +122,8 @@ let dirty = true;
 let tool = 'pen';
 let color = currentTheme() === 'dark' ? '#ffffff' : '#1c1c1e';
 let brushSize = 8;
+let textSize = 18; // text defaults to a phone-readable size (font ≈ size × 2.2)
+function currentSize() { return tool === 'text' ? textSize : brushSize; }
 
 const PALETTE = ['#ffffff', '#1c1c1e', '#ff2d55', '#ff7a59', '#ff9f0a', '#ffcc00',
   '#30d158', '#0a84ff', '#bf5af2', '#64d2ff', '#ff6482', '#ac8e68'];
@@ -589,9 +591,22 @@ canvas.addEventListener('pointerdown', (e) => {
     }
   }
 
+  // tapping an existing shape/text selects it instead of starting new input —
+  // so tap-to-select works even with the text tool active
+  if (tool !== 'pan') {
+    const hit = hitSelectable(w);
+    if (hit) {
+      activeStroke = null; strokeStarted = false;
+      previewShape = null; shapeStart = null;
+      select(hit.id);
+      pointers.delete(e.pointerId);
+      return;
+    }
+  }
+
   if (tool === 'text') {
     deselect();
-    showTextOverlay(w);
+    showTextOverlay(w, e.clientX, e.clientY);
     pointers.delete(e.pointerId);
     return;
   }
@@ -720,7 +735,7 @@ function finishGesture(e) {
     const hit = hitSelectable(w);
     if (hit) {
       activeStroke = null; previewShape = null; shapeStart = null;
-      select(hit.id);
+      if (selectedId !== hit.id) select(hit.id);
       return;
     }
     deselect();
@@ -752,12 +767,20 @@ function sendCursor(sx, sy) {
 
 /* ================= text tool ================= */
 let textWorld = null;
-function showTextOverlay(w) {
+function showTextOverlay(w, sx, sy) {
   textWorld = w;
   const ov = $('#text-overlay');
   ov.classList.remove('hidden');
   $('#inp-text').value = '';
-  if (G) G.fromTo(ov, { y: 16, opacity: 0, scale: .96 }, { y: 0, opacity: 1, scale: 1, duration: .4, ease: 'back.out(1.6)', clearProps: 'scale' });
+  // anchor the entry box to the tap point, Apple-popover style
+  const ow = Math.min(280, window.innerWidth * 0.78);
+  ov.style.width = ow + 'px';
+  ov.style.left = Math.max(12, Math.min(sx - 24, window.innerWidth - ow - 12)) + 'px';
+  const oh = ov.offsetHeight || 160;
+  let y = sy + 18;
+  if (y + oh > window.innerHeight - 96) y = sy - oh - 18; // tap low on screen → show above, clear of the keyboard
+  ov.style.top = Math.max(12, y) + 'px';
+  if (G) G.fromTo(ov, { y: 10, opacity: 0, scale: .96 }, { y: 0, opacity: 1, scale: 1, duration: .35, ease: 'back.out(1.7)', clearProps: 'scale' });
   setTimeout(() => $('#inp-text').focus(), 50);
 }
 $('#btn-text-cancel').onclick = () => { $('#text-overlay').classList.add('hidden'); textWorld = null; };
@@ -765,7 +788,7 @@ $('#btn-text-ok').onclick = () => {
   const t = $('#inp-text').value.trim().slice(0, 200);
   $('#text-overlay').classList.add('hidden');
   if (!t || !textWorld) { textWorld = null; return; }
-  const s = { id: newStrokeId(), tool: 'text', color, size: brushSize, text: t, x: textWorld.x, y: textWorld.y };
+  const s = { id: newStrokeId(), tool: 'text', color, size: textSize, text: t, x: textWorld.x, y: textWorld.y };
   strokes.set(s.id, s);
   myStrokeIds.push(s.id); redoStack.length = 0;
   socket.emit('stroke-add', s);
@@ -781,6 +804,7 @@ document.querySelectorAll('.tool').forEach((btn) => {
     document.querySelectorAll('.tool').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     tool = btn.dataset.tool;
+    $('#inp-size').value = currentSize();
     canvas.style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
     if (G) G.fromTo(btn, { scale: .8 }, { scale: 1, duration: .38, ease: 'back.out(2.5)', clearProps: 'scale' });
     updateRing();
@@ -815,7 +839,11 @@ customWrap.querySelector('input').oninput = (e) => {
 };
 colorsRow.appendChild(customWrap);
 
-$('#inp-size').oninput = (e) => { brushSize = Number(e.target.value); updateRing(); };
+$('#inp-size').oninput = (e) => {
+  const v = Number(e.target.value);
+  if (tool === 'text') textSize = v; else brushSize = v;
+  updateRing();
+};
 
 /* ---------- brush cursor ring (desktop) ---------- */
 const ring = $('#brush-ring');
