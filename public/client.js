@@ -909,6 +909,7 @@ function applyResize(s, g, curW) {
 const pointers = new Map();
 let activeStroke = null;   // local stroke being drawn (network start deferred to first move)
 let strokeStarted = false; // whether stroke-start was emitted for activeStroke
+let liveStrokeErased = false; // partner erased/cleared the live stroke mid-draw → drop it on pen-up
 let pendingPoints = [];
 let flushTimer = null;
 let previewShape = null;
@@ -922,7 +923,7 @@ const TAP_MS = 600;
 
 function newStrokeId() { return `${socket.id}:${strokeSeq++}`; }
 function flushPoints() {
-  if (!activeStroke || !strokeStarted || !pendingPoints.length) return;
+  if (!activeStroke || !strokeStarted || !pendingPoints.length || liveStrokeErased) return;
   socket.emit('stroke-point', { id: activeStroke.id, points: pendingPoints });
   pendingPoints = [];
 }
@@ -934,6 +935,14 @@ function beginNetworkStroke() {
 function endActiveStroke() {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
   if (activeStroke) {
+    if (liveStrokeErased) {
+      // erased (or canvas cleared) mid-draw — drop it silently instead of
+      // resurrecting the ghost on pen-up
+      activeStroke = null; strokeStarted = false; liveStrokeErased = false;
+      pendingPoints = [];
+      dirty = true;
+      return;
+    }
     if (strokeStarted) {
       flushPoints();
       socket.emit('stroke-end', { id: activeStroke.id });
@@ -1021,6 +1030,7 @@ canvas.addEventListener('pointerdown', (e) => {
   } else {
     activeStroke = { id: newStrokeId(), tool, color, size: brushSize, points: [w.x, w.y] };
     strokeStarted = false;
+    liveStrokeErased = false;
     dirty = true; // local ink appears instantly; network follows on first move
   }
   sendCursor(e.clientX, e.clientY);
@@ -1202,12 +1212,15 @@ function finishGesture(e) {
     deselect();
     if (activeStroke && !strokeStarted) {
       // tap with a brush on empty canvas = dot
+      if (liveStrokeErased) { activeStroke = null; liveStrokeErased = false; }
+      else {
       const s = { ...activeStroke, points: activeStroke.points.slice() };
       strokes.set(s.id, s);
       undoStack.push({ kind: 'add', id: s.id }); redoStack.length = 0;
       socket.emit('stroke-add', s);
       activeStroke = null;
       dirty = true;
+      }
     } else {
       activeStroke = null; previewShape = null; shapeStart = null;
     }
@@ -1728,6 +1741,7 @@ function connectSocket() {
   socket.on('stroke-remove', ({ id }) => {
     strokes.delete(id);
     dropAddUndo(id);
+    if (activeStroke && activeStroke.id === id) liveStrokeErased = true; // erased mid-draw
     if (selectedId === id) deselect();
     dirty = true;
   });
@@ -1746,6 +1760,7 @@ function connectSocket() {
   });
   socket.on('canvas-clear', () => {
     strokes.clear(); undoStack.length = 0; redoStack.length = 0;
+    if (activeStroke) liveStrokeErased = true; // cleared mid-draw — don't resurrect on pen-up
     deselect();
     toast('Canvas cleared');
     dirty = true;
