@@ -3,7 +3,7 @@
 'use strict';
 
 const $ = (s) => document.querySelector(s);
-const G = window.gsap || null; // animations degrade gracefully if the CDN is blocked
+const G = window.gsap || null; // animations degrade gracefully if gsap fails to load
 const api = async (path, opts = {}) => {
   const res = await fetch(path, {
     ...opts,
