@@ -33,6 +33,10 @@ async function init() {
     connectionString: process.env.DATABASE_URL,
     ssl: isLocal ? false : { rejectUnauthorized: false },
     max: 3,
+    // never wait forever: a hanging connection (Neon waking slowly, network
+    // blackhole) must fail fast so the process restarts instead of sitting
+    // in boot limbo with the client stuck on "Preparing your canvas…"
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 15000),
   });
   // fail fast if the database is unreachable — never boot half-persisted
   await pool.query('SELECT 1');
