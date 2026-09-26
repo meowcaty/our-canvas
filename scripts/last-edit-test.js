@@ -82,12 +82,13 @@ check('center: non-finite text coords → null', strokeCenter({ tool: 'text', x:
 
   const sockA = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie } });
   await once(sockA, 'canvas-state');
-  const joinState = async () => {
+  const joinFull = async () => {
     const s = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie } });
     const st = await once(s, 'canvas-state');
     s.close();
-    return st.lastEdit;
+    return st;
   };
+  const joinState = async () => (await joinFull()).lastEdit;
 
   // add a rect → anchor becomes its center
   const addP = once(sockA, 'stroke-add');
@@ -108,11 +109,24 @@ check('center: non-finite text coords → null', strokeCenter({ tool: 'text', x:
   sockA.emit('stroke-add', { id: 'le-text', tool: 'text', color: '#111111', size: 24, text: 'hi', x: 500, y: 600 });
   await addT;
   leNow = await joinState();
-  check('integration: text add moves anchor', leNow && leNow.x === 500 && leNow.y === 600);
+  check('integration: text add moves anchor', leNow && leNow.x === 640 && leNow.y === 600); // box center-x: 500 + 280/2
   sockA.emit('stroke-transform', { id: 'le-text', x: 700, y: 800, size: 24 });
   await sleep(400);
   leNow = await joinState();
-  check('integration: transform moves anchor', leNow && leNow.x === 700 && leNow.y === 800);
+  check('integration: transform moves anchor', leNow && leNow.x === 840 && leNow.y === 800);
+
+  // resize the text box → w syncs live to the partner and persists
+  const sockB = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie } });
+  await once(sockB, 'canvas-state');
+  const bcastP = once(sockB, 'stroke-transform');
+  sockA.emit('stroke-transform', { id: 'le-text', w: 400 });
+  const patch = await bcastP;
+  check('integration: text box resize broadcasts w', patch && patch.id === 'le-text' && patch.w === 400);
+  const full = await joinFull();
+  const tst = (full.strokes || []).find((x) => x.id === 'le-text');
+  check('integration: resized w persisted', tst && tst.w === 400);
+  check('integration: anchor follows box center-x', full.lastEdit && full.lastEdit.x === 900 && full.lastEdit.y === 800); // 700 + 400/2
+  sockB.close();
 
   // clear → anchor resets
   const clrP = once(sockA, 'canvas-clear');

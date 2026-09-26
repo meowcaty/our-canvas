@@ -311,12 +311,15 @@ function drawStroke(s) {
 
   if (s.tool === 'text') {
     ctx.fillStyle = C;
-    ctx.font = `${s.size * 2.2}px -apple-system, "SF Pro Text", sans-serif`;
+    const fs = textFontPx(s);
+    ctx.font = `${fs}px -apple-system, "SF Pro Text", sans-serif`;
     // Pin the baseline explicitly: glyphs hang below (s.x, s.y).
     // (Previously this relied on leftover context state from the peer-name
     //  labels, which also made the selection box disagree with the render.)
     ctx.textBaseline = 'top';
-    ctx.fillText(s.text, s.x, s.y);
+    const lines = wrapText(s);
+    const lh = fs * TEXT_LINE_H;
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], s.x, s.y + i * lh);
     ctx.restore();
     return;
   }
@@ -419,6 +422,17 @@ function render() {
     drawStroke(previewShape);
     ctx.restore();
   }
+  if (textBoxPreview) {
+    // dashed box while dragging out a text box, in the current text color
+    const p = textBoxPreview;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = .85;
+    ctx.lineWidth = 1.5 / cam.zoom;
+    ctx.setLineDash([10 / cam.zoom, 8 / cam.zoom]);
+    ctx.strokeRect(p.x, p.y, Math.max(2, p.w), Math.max(2, p.h));
+    ctx.restore();
+  }
 
   if (selectedId) {
     drawSelection(performance.now());
@@ -460,10 +474,56 @@ const SELECTABLE = ['line', 'rect', 'circle', 'text'];
 let selectedId = null;
 let selectedAt = 0;
 
-function textMetrics(s) {
-  const fs = s.size * 2.2;
+/* ============ paragraph text: every text lives in a box, wraps like Photoshop ============
+   A text stroke is { x, y, w } — top-left of its box plus the box width.
+   Height auto-grows from the wrapped lines (auto-grow, per Yadu 2026-09-26).
+   Legacy strokes without `w` get a box fitted to their single line, so
+   nothing jumps when they first render as wrapped text. */
+const TEXT_LINE_H = 1.2; // line height as a multiple of the font size
+const TEXT_DEFAULT_W = 280; // box width for a plain tap
+function textFontPx(s) { return s.size * 2.2; }
+function textBoxW(s) {
+  if (Number.isFinite(s.w) && s.w > 0) return s.w;
+  ctx.font = `${textFontPx(s)}px -apple-system, "SF Pro Text", sans-serif`;
+  return Math.max(24, ctx.measureText(s.text || ' ').width);
+}
+const wrapCache = new WeakMap(); // stroke object → { key, lines }
+function wrapText(s) {
+  const fs = textFontPx(s);
+  const maxW = textBoxW(s);
+  const key = `${s.text}\n${maxW}\n${fs}`;
+  const hit = wrapCache.get(s);
+  if (hit && hit.key === key) return hit.lines;
   ctx.font = `${fs}px -apple-system, "SF Pro Text", sans-serif`;
-  return { w: Math.max(12, ctx.measureText(s.text || ' ').width), h: fs };
+  const measure = (t) => ctx.measureText(t).width;
+  const lines = [];
+  for (const para of String(s.text == null ? '' : s.text).split('\n')) {
+    let line = '';
+    for (const word of para.split(' ')) {
+      const trial = line ? line + ' ' + word : word;
+      if (measure(trial) <= maxW) { line = trial; continue; }
+      if (line) { lines.push(line); line = ''; }
+      // fresh line: place the word, breaking it if even one line can't hold it
+      let rest = word;
+      while (rest) {
+        if (measure(rest) <= maxW) { line = rest; rest = ''; break; }
+        let lo = 1, hi = rest.length;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (measure(rest.slice(0, mid)) <= maxW) lo = mid; else hi = mid - 1;
+        }
+        lines.push(rest.slice(0, lo));
+        rest = rest.slice(lo);
+      }
+    }
+    lines.push(line);
+  }
+  wrapCache.set(s, { key, lines });
+  return lines;
+}
+function textMetrics(s) {
+  const fs = textFontPx(s);
+  return { w: textBoxW(s), h: wrapText(s).length * fs * TEXT_LINE_H };
 }
 function shapeBBox(s) {
   if (s.tool === 'text') {
@@ -547,12 +607,15 @@ function select(id) {
   btn.classList.remove('hidden');
   if (G) G.fromTo(btn, { scale: .3, opacity: 0 }, { scale: 1, opacity: 1, duration: .38, ease: 'back.out(2.2)', clearProps: 'scale' });
   positionDeleteBtn();
+  const s = strokes.get(id);
+  if (s && s.tool === 'text') $('#inp-size').value = s.size; // slider now drives this text
   dirty = true;
 }
 function deselect() {
   if (!selectedId) return;
   selectedId = null;
   $('#btn-delete').classList.add('hidden');
+  $('#inp-size').value = currentSize();
   dirty = true;
 }
 function positionDeleteBtn() {
@@ -583,7 +646,7 @@ $('#btn-delete').onclick = () => {
 let xformTimer = null;
 function transformPatch(s) {
   return s.tool === 'text'
-    ? { x: s.x, y: s.y, size: s.size }
+    ? { x: s.x, y: s.y, w: s.w, size: s.size }
     : { points: s.points.slice() };
 }
 function emitTransform(s, final) {
@@ -615,13 +678,13 @@ function applyResize(s, g, curW) {
     return;
   }
   if (s.tool === 'text') {
+    // paragraph text: handles resize the BOX (text re-wraps, auto-grows).
+    // Font size is the size slider's job, not the handles'.
     const o = g.opposite;
-    const d0 = Math.hypot(g.startW.x - o.x, g.startW.y - o.y) || 1;
-    const d1 = Math.hypot(curW.x - o.x, curW.y - o.y);
-    const k = Math.max(0.25, Math.min(5, d1 / d0));
-    s.size = Math.min(200, Math.max(4, g.orig.size * k));
-    s.x = o.x + (g.orig.x - o.x) * k;
-    s.y = o.y + (g.orig.y - o.y) * k;
+    let nx = curW.x;
+    if (Math.abs(nx - o.x) < 12) nx = o.x + (nx >= o.x ? 12 : -12);
+    s.x = Math.min(o.x, nx);
+    s.w = Math.max(24, Math.abs(nx - o.x));
     return;
   }
   // rect / circle: map original geometry into the new bbox
@@ -646,6 +709,7 @@ let strokeStarted = false; // whether stroke-start was emitted for activeStroke
 let pendingPoints = [];
 let flushTimer = null;
 let previewShape = null;
+let textBoxPreview = null; // dashed box while dragging out a text box
 let shapeStart = null;
 let pinch = null;
 let gesture = null; // tap-candidate | drawing | shape-preview | move-sel | resize-sel | pan-drag
@@ -689,7 +753,7 @@ canvas.addEventListener('pointerdown', (e) => {
   if (pointers.size === 2) {
     if (gesture && (gesture.kind === 'move-sel' || gesture.kind === 'resize-sel') && gesture.s) finalizeTransform(gesture.s);
     endActiveStroke();
-    previewShape = null; shapeStart = null; gesture = null;
+    previewShape = null; shapeStart = null; textBoxPreview = null; gesture = null;
     hideRing();
     const [a, b] = [...pointers.values()];
     pinch = { d0: Math.hypot(a.sx - b.sx, a.sy - b.sy), zoom0: cam.zoom, mx: (a.sx + b.sx) / 2, my: (a.sy + b.sy) / 2 };
@@ -710,7 +774,6 @@ canvas.addEventListener('pointerdown', (e) => {
         kind: 'resize-sel', s, handle: h,
         startW: w, opposite: s.tool === 'line' ? null : oppositeCorner(b, h.corner),
         bbox0: { ...b, pts: s.points ? s.points.slice() : null },
-        orig: s.tool === 'text' ? { x: s.x, y: s.y, size: s.size } : null,
       };
       hideRing();
       return;
@@ -739,7 +802,9 @@ canvas.addEventListener('pointerdown', (e) => {
 
   if (tool === 'text') {
     deselect();
-    showTextOverlay(w, e.clientX, e.clientY);
+    // drag to draw the text box (Photoshop-style); a plain tap gets a default box
+    gesture = { kind: 'text-box', sx: e.clientX, sy: e.clientY, startW: w };
+    textBoxPreview = null;
     pointers.delete(e.pointerId);
     return;
   }
@@ -806,6 +871,17 @@ canvas.addEventListener('pointermove', (e) => {
     dirty = true;
     return;
   }
+  if (gesture.kind === 'text-box') {
+    const moved = Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy);
+    if (moved < TAP_SLOP) { textBoxPreview = null; return; }
+    const a = gesture.startW;
+    textBoxPreview = {
+      x: Math.min(a.x, w.x), y: Math.min(a.y, w.y),
+      w: Math.abs(w.x - a.x), h: Math.abs(w.y - a.y),
+    };
+    dirty = true;
+    return;
+  }
   if (gesture.kind === 'tap-candidate') {
     const moved = Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy);
     if (moved < TAP_SLOP) return;
@@ -862,6 +938,16 @@ function finishGesture(e) {
     endActiveStroke();
     return;
   }
+  if (g.kind === 'text-box') {
+    const p = textBoxPreview;
+    textBoxPreview = null;
+    const box = p
+      ? { x: p.x, y: p.y, w: Math.max(24, p.w) }
+      : { x: g.startW.x, y: g.startW.y, w: TEXT_DEFAULT_W };
+    dirty = true;
+    showTextOverlay(box, e.clientX, e.clientY);
+    return;
+  }
   if (g.kind === 'tap-candidate') {
     // a real tap → maybe select, maybe dot, maybe deselect
     const w = screenToWorld(e.clientX, e.clientY);
@@ -899,14 +985,21 @@ function sendCursor(sx, sy) {
 }
 
 /* ================= text tool ================= */
-let textWorld = null;
-function showTextOverlay(w, sx, sy) {
-  textWorld = w;
+let textBox = null; // { x, y, w } world — the box being filled
+function showTextOverlay(box, sx, sy) {
+  textBox = box;
   const ov = $('#text-overlay');
   ov.classList.remove('hidden');
-  $('#inp-text').value = '';
-  // anchor the entry box to the tap point, Apple-popover style
-  const ow = Math.min(280, window.innerWidth * 0.78);
+  const ta = $('#inp-text');
+  ta.value = '';
+  ta.style.height = 'auto';
+  // wrap preview: scale the typing font so this textarea wraps like the canvas box
+  const boxScreenW = Math.max(48, box.w * cam.zoom);
+  const taW = Math.max(120, Math.min(boxScreenW, window.innerWidth * 0.78, 360));
+  ta.style.fontSize = ((textSize * 2.2) * (taW / boxScreenW)).toFixed(1) + 'px';
+  ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(200, ta.scrollHeight) + 'px'; };
+  // anchor the entry box to the release point, Apple-popover style
+  const ow = taW + 28; // overlay padding
   ov.style.width = ow + 'px';
   ov.style.left = Math.max(12, Math.min(sx - 24, window.innerWidth - ow - 12)) + 'px';
   const oh = ov.offsetHeight || 160;
@@ -916,22 +1009,23 @@ function showTextOverlay(w, sx, sy) {
   if (G) G.fromTo(ov, { y: 10, opacity: 0, scale: .96 }, { y: 0, opacity: 1, scale: 1, duration: .35, ease: 'back.out(1.7)', clearProps: 'scale' });
   setTimeout(() => $('#inp-text').focus(), 50);
 }
-$('#btn-text-cancel').onclick = () => { $('#text-overlay').classList.add('hidden'); textWorld = null; };
+$('#btn-text-cancel').onclick = () => { $('#text-overlay').classList.add('hidden'); textBox = null; };
 $('#btn-text-ok').onclick = () => {
-  const t = $('#inp-text').value.trim().slice(0, 200);
+  const t = $('#inp-text').value.trim().slice(0, 500);
   $('#text-overlay').classList.add('hidden');
-  if (!t || !textWorld) { textWorld = null; return; }
-  const s = { id: newStrokeId(), tool: 'text', color, size: textSize, text: t, x: textWorld.x, y: textWorld.y };
+  if (!t || !textBox) { textBox = null; return; }
+  const s = { id: newStrokeId(), tool: 'text', color, size: textSize, text: t, x: textBox.x, y: textBox.y, w: textBox.w };
   strokes.set(s.id, s);
   myStrokeIds.push(s.id); redoStack.length = 0;
   socket.emit('stroke-add', s);
-  textWorld = null;
+  textBox = null;
   dirty = true;
 };
 
 /* ============ smart tool labels: no permanent labels, zero clutter ============
    - long-press any tool → its name pops up above it (always available)
-   - tapping a tool flashes its name until you've used it 3 times, then stops
+   - tapping a tool always flashes its name (~2s)
+   - the tag button in the top bar opens a sheet with every tool's name
    - one-time hint on first canvas visit */
 const toolTipEl = $('#tool-tip');
 const toolFlashEl = $('#tool-flash');
@@ -1055,7 +1149,7 @@ document.querySelectorAll('.tool').forEach((btn) => {
     clearTimeout(lpTimer); hideToolTip();
     if (lpFired) { lpFired = false; return; } // was a peek, not a pick
     endActiveStroke();
-    previewShape = null; shapeStart = null; gesture = null;
+    previewShape = null; shapeStart = null; textBoxPreview = null; gesture = null;
     document.querySelectorAll('.tool').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     tool = btn.dataset.tool;
@@ -1098,7 +1192,18 @@ colorsRow.appendChild(customWrap);
 $('#inp-size').oninput = (e) => {
   const v = Number(e.target.value);
   if (tool === 'text') textSize = v; else brushSize = v;
+  // handles resize the text box now — the slider is how selected text changes size
+  const sel = selectedId ? strokes.get(selectedId) : null;
+  if (sel && sel.tool === 'text') {
+    sel.size = Math.min(200, Math.max(4, v));
+    scheduleTransform(sel);
+    dirty = true;
+  }
   updateRing();
+};
+$('#inp-size').onchange = () => {
+  const sel = selectedId ? strokes.get(selectedId) : null;
+  if (sel && sel.tool === 'text') finalizeTransform(sel);
 };
 
 /* ---------- brush cursor ring (desktop) ---------- */
@@ -1317,11 +1422,12 @@ function connectSocket() {
     if (selectedId === id) deselect();
     dirty = true;
   });
-  socket.on('stroke-transform', ({ id, points, x, y, size }) => {
+  socket.on('stroke-transform', ({ id, points, x, y, w, size }) => {
     const s = strokes.get(id);
     if (!s) return;
     if (points) s.points = points;
     if (x !== undefined) { s.x = x; s.y = y; }
+    if (w !== undefined) s.w = w;
     if (size !== undefined) s.size = size;
     dirty = true;
   });

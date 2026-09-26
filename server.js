@@ -31,7 +31,11 @@ const isSecureReq = (req) => req.secure || req.headers['x-forwarded-proto'] === 
 function strokeCenter(s) {
   if (!s) return null;
   if (s.tool === 'text') {
-    if (Number.isFinite(s.x) && Number.isFinite(s.y)) return { x: s.x, y: s.y };
+    if (Number.isFinite(s.x) && Number.isFinite(s.y)) {
+      // anchor on the horizontal center of the text box
+      const cx = Number.isFinite(s.w) && s.w > 0 ? s.x + s.w / 2 : s.x;
+      return { x: cx, y: s.y };
+    }
     return null;
   }
   if (Array.isArray(s.points) && s.points.length >= 2) {
@@ -58,10 +62,12 @@ function sanitizeStroke(s, authorId, authorName) {
   const id = String(s.id || '').slice(0, 64) || `${authorId}:${Date.now()}`;
   const stroke = { id, tool, color, size, author: authorName, authorId, ts: Date.now() };
   if (tool === 'text') {
-    stroke.text = String(s.text || '').slice(0, 200);
+    stroke.text = String(s.text || '').slice(0, 500);
     const x = Number(s.x), y = Number(s.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     stroke.x = x; stroke.y = y;
+    const w = Number(s.w);
+    stroke.w = Number.isFinite(w) ? Math.min(1e6, Math.max(24, w)) : 280;
   } else {
     const pts = Array.isArray(s.points) ? s.points : [];
     if (tool === 'line' || tool === 'rect' || tool === 'circle') {
@@ -238,7 +244,7 @@ async function main() {
     });
 
     // live move/resize of shapes & text — shared canvas, anyone may edit
-    socket.on('stroke-transform', ({ id, points, x, y, size }) => {
+    socket.on('stroke-transform', ({ id, points, x, y, w, size }) => {
       const c = clients.get(socket.id);
       if (!c) return;
       const stroke = strokes.find((s) => s.id === id);
@@ -247,6 +253,8 @@ async function main() {
       const patch = {};
       if (stroke.tool === 'text') {
         if (Number.isFinite(x) && Number.isFinite(y)) { patch.x = Math.max(-1e6, Math.min(1e6, x)); patch.y = Math.max(-1e6, Math.min(1e6, y)); }
+        const nw = Number(w);
+        if (Number.isFinite(nw)) patch.w = Math.min(1e6, Math.max(24, nw));
         const ns = Number(size);
         if (Number.isFinite(ns)) patch.size = Math.min(200, Math.max(4, ns));
       } else if (Array.isArray(points) && points.length === 4 && points.every(Number.isFinite)) {
