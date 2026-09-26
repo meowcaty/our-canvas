@@ -953,23 +953,17 @@ function hideToolTip() {
   else { toolTipEl.style.opacity = '0'; toolTipEl.classList.add('hidden'); }
 }
 
-let toolSeenCounts = {};
-try { toolSeenCounts = JSON.parse(localStorage.getItem('oc-tool-seen') || '{}'); } catch (_) { toolSeenCounts = {}; }
 function flashToolName(btn) {
-  const key = btn.dataset.tool;
-  const n = (toolSeenCounts[key] || 0) + 1;
-  toolSeenCounts[key] = n;
-  try { localStorage.setItem('oc-tool-seen', JSON.stringify(toolSeenCounts)); } catch (_) {}
-  if (n > 3) return; // you know this one — no more captions
-  toolFlashEl.textContent = btn.title || key;
+  // every tap shows the name — no cutoff, no guessing
+  toolFlashEl.textContent = btn.title || btn.dataset.tool;
   toolFlashEl.classList.remove('hidden');
   if (G) {
     G.killTweensOf(toolFlashEl);
     G.fromTo(toolFlashEl, { x: '-50%', opacity: 0, y: 8 }, { x: '-50%', opacity: 1, y: 0, duration: .25, ease: 'power2.out' });
-    G.to(toolFlashEl, { opacity: 0, y: -6, duration: .3, delay: 1.1, onComplete: () => toolFlashEl.classList.add('hidden') });
+    G.to(toolFlashEl, { opacity: 0, y: -6, duration: .3, delay: 1.8, onComplete: () => toolFlashEl.classList.add('hidden') });
   } else {
     toolFlashEl.style.opacity = '1';
-    setTimeout(() => { toolFlashEl.style.opacity = '0'; toolFlashEl.classList.add('hidden'); }, 1200);
+    setTimeout(() => { toolFlashEl.style.opacity = '0'; toolFlashEl.classList.add('hidden'); }, 1900);
   }
 }
 
@@ -981,6 +975,65 @@ function maybeShowToolHint() {
   setTimeout(() => toast('Tip: press & hold any tool to see its name ✨'), 1500);
   return true;
 }
+
+/* ============ tools sheet: every tool, named, beautifully ============
+   A small tag button in the top bar opens a frosted sheet with all 11 tools
+   in a roomy grid — icon + name, staggered entrance. Tapping one selects it
+   through the toolbar's own click path, so captions and state stay identical. */
+const toolsBackdrop = $('#tools-backdrop');
+const toolsSheet = $('#tools-sheet');
+const toolsGrid = $('#tools-grid');
+let toolsOpen = false, toolsBuilt = false;
+function buildToolsSheet() {
+  toolsGrid.innerHTML = '';
+  document.querySelectorAll('#tools-row .tool').forEach((btn) => {
+    const cell = document.createElement('button');
+    cell.className = 'tool-cell';
+    cell.dataset.tool = btn.dataset.tool;
+    const svg = btn.querySelector('svg');
+    if (svg) cell.appendChild(svg.cloneNode(true));
+    const label = document.createElement('span');
+    label.textContent = btn.title || btn.dataset.tool;
+    cell.appendChild(label);
+    cell.setAttribute('aria-label', label.textContent);
+    cell.addEventListener('click', () => {
+      const tb = document.querySelector(`#tools-row .tool[data-tool="${cell.dataset.tool}"]`);
+      if (tb) tb.click();
+      closeToolsSheet();
+    });
+    toolsGrid.appendChild(cell);
+  });
+  toolsBuilt = true;
+}
+function openToolsSheet() {
+  if (toolsOpen) return;
+  toolsOpen = true;
+  if (!toolsBuilt) buildToolsSheet();
+  toolsGrid.querySelectorAll('.tool-cell').forEach((c) =>
+    c.classList.toggle('active', c.dataset.tool === tool));
+  toolsBackdrop.classList.remove('hidden');
+  toolsSheet.classList.remove('hidden');
+  if (G) {
+    G.fromTo(toolsBackdrop, { opacity: 0 }, { opacity: 1, duration: .25, overwrite: true });
+    G.fromTo(toolsSheet, { y: 70, opacity: 0 }, { y: 0, opacity: 1, duration: .45, ease: 'back.out(1.5)', overwrite: true });
+    G.fromTo('#tools-grid .tool-cell',
+      { y: 16, opacity: 0, scale: .85 },
+      { y: 0, opacity: 1, scale: 1, duration: .35, ease: 'back.out(1.8)', stagger: .03, delay: .08, clearProps: 'transform', overwrite: true });
+  } else {
+    toolsBackdrop.style.opacity = '1';
+  }
+}
+function closeToolsSheet() {
+  if (!toolsOpen) return;
+  toolsOpen = false;
+  const done = () => { toolsBackdrop.classList.add('hidden'); toolsSheet.classList.add('hidden'); };
+  if (G) {
+    G.to(toolsBackdrop, { opacity: 0, duration: .2, overwrite: true });
+    G.to(toolsSheet, { y: 50, opacity: 0, duration: .25, ease: 'power2.in', overwrite: true, onComplete: done });
+  } else done();
+}
+$('#btn-tools').onclick = () => (toolsOpen ? closeToolsSheet() : openToolsSheet());
+toolsBackdrop.onclick = closeToolsSheet;
 
 /* ================= toolbar ================= */
 document.querySelectorAll('.tool').forEach((btn) => {
@@ -1180,17 +1233,22 @@ function frameOnLoad(lastEdit) {
   if (!b) return;
   const w = Math.max(1, b.x1 - b.x0), h = Math.max(1, b.y1 - b.y0);
   const z = Math.min(1, Math.max(0.2, Math.min(cssW / w, cssH / h) * 0.92));
-  let cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-  if (lastEdit && Number.isFinite(lastEdit.x) && Number.isFinite(lastEdit.y)) { cx = lastEdit.x; cy = lastEdit.y; }
+  const ccx = (b.x0 + b.x1) / 2, ccy = (b.y0 + b.y1) / 2;
   if (frameTween) { frameTween.kill(); frameTween = null; }
-  if (G) {
-    frameTween = G.to(cam, {
-      x: cx, y: cy, zoom: z, duration: .8, ease: 'power3.out',
-      onUpdate: () => { dirty = true; },
-      onComplete: () => { frameTween = null; dirty = true; },
-    });
-  } else {
-    cam.x = cx; cam.y = cy; cam.zoom = z; dirty = true;
+  // phase 1: show the middle of everything, fit-zoomed, right away
+  cam.x = ccx; cam.y = ccy; cam.zoom = z; dirty = true;
+  // phase 2: glide over to where the last edit happened
+  if (lastEdit && Number.isFinite(lastEdit.x) && Number.isFinite(lastEdit.y)) {
+    if (Math.hypot(lastEdit.x - ccx, lastEdit.y - ccy) < 40) return; // already there
+    if (G) {
+      frameTween = G.to(cam, {
+        x: lastEdit.x, y: lastEdit.y, duration: 1, ease: 'power3.inOut',
+        onUpdate: () => { dirty = true; },
+        onComplete: () => { frameTween = null; dirty = true; },
+      });
+    } else {
+      cam.x = lastEdit.x; cam.y = lastEdit.y; dirty = true;
+    }
   }
 }
 

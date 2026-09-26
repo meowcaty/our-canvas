@@ -69,11 +69,10 @@ function penBtn() { return { dataset: { tool: 'pen' }, title: 'Pen' }; }
     flashToolName(penBtn());
     check(`tap ${i}: name caption shown`, !env.toolFlashEl.isHidden() && env.toolFlashEl.textContent === 'Pen');
   }
-  check('counts persisted per tool', JSON.parse(storage.getItem('oc-tool-seen')).pen === 3);
 
   env.toolFlashEl.reset();
-  flashToolName(penBtn()); // 4th tap
-  check('tap 4: caption no longer shown', env.toolFlashEl.isHidden() && env.toolFlashEl.textContent === '');
+  flashToolName(penBtn()); // 4th tap — no cutoff anymore, always shows
+  check('tap 4: caption still shown (no cutoff)', !env.toolFlashEl.isHidden() && env.toolFlashEl.textContent === 'Pen');
 
   // a different tool still teaches
   env.toolFlashEl.reset();
@@ -82,7 +81,7 @@ function penBtn() { return { dataset: { tool: 'pen' }, title: 'Pen' }; }
 
   // fade-out is scheduled and re-hides
   const fade = [...G._tos].reverse().find((t) => t.el === env.toolFlashEl);
-  check('fade-out scheduled after caption', !!fade && fade.vars.delay === 1.1);
+  check('fade-out scheduled after caption', !!fade && fade.vars.delay === 1.8);
   fade.vars.onComplete();
   check('fade-out re-hides caption', env.toolFlashEl.isHidden());
 
