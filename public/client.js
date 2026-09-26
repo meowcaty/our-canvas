@@ -14,8 +14,8 @@ const api = async (path, opts = {}) => {
   return { status: res.status, ...body };
 };
 
-/* ================= theme (light only) ================= */
-const themeColors = { bg: '#fbfbfc', dot: 'rgba(0,0,0,.09)' };
+/* ================= theme (dark only) ================= */
+const themeColors = { bg: '#060609', dot: 'rgba(255,255,255,.08)' };
 
 /* ================= boot flow ================= */
 let myName = '';
@@ -216,7 +216,7 @@ let strokeSeq = 0;
 let dirty = true;
 
 let tool = 'pen';
-let color = '#1c1c1e';
+let color = '#ffffff';
 let brushSize = 8;
 let textSize = 18; // text defaults to a phone-readable size (font ≈ size × 2.2)
 function currentSize() { return tool === 'text' ? textSize : brushSize; }
@@ -490,9 +490,9 @@ function render() {
     const w = ctx.measureText(p.name).width;
     const bx = p.x + 12 / cam.zoom, by = p.y + 12 / cam.zoom;
     const pad = 6 / cam.zoom, h = 20 / cam.zoom;
-    ctx.fillStyle = 'rgba(255,255,255,.92)';
+    ctx.fillStyle = 'rgba(28,28,30,.9)';
     ctx.beginPath(); ctx.roundRect(bx, by, w + pad * 2, h, h / 2); ctx.fill();
-    ctx.fillStyle = '#000';
+    ctx.fillStyle = '#fff';
     ctx.fillText(p.name, bx + pad, by + pad * 0.7);
     ctx.restore();
   }
