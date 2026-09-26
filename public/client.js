@@ -1079,13 +1079,26 @@ function peerToast(msg) {
 }
 
 /* ================= socket: tuned for minimum latency ================= */
+// reconnect → full page reload: the simplest bulletproof resync.
+// the HttpOnly session cookie survives, so we land straight back on the canvas.
+function handleReconnect() {
+  const now = Date.now();
+  const last = Number(sessionStorage.getItem('oc-last-reload') || 0);
+  // flapping guard: don't reload-storm on a jittery network —
+  // canvas-state already refreshed the data in that case
+  if (now - last < 15000) { toast('Back online 💕'); return 'resync'; }
+  try { sessionStorage.setItem('oc-last-reload', String(now)); } catch (_) {}
+  toast('Back online — refreshing canvas…');
+  setTimeout(() => location.reload(), 900);
+  return 'reload';
+}
 function connectSocket() {
   // websocket first (no long-polling handshake delay), polling as fallback
   socket = io({ transports: ['websocket', 'polling'] });
   socket.on('connect', () => {
     setConn('live');
-    if (!firstConn) toast('Back online 💕');
-    firstConn = false;
+    if (firstConn) { firstConn = false; return; }
+    handleReconnect();
   });
   socket.on('disconnect', () => {
     setConn('connecting');
