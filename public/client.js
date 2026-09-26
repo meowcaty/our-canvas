@@ -993,12 +993,12 @@ function showTextOverlay(box, sx, sy) {
   const ta = $('#inp-text');
   ta.value = '';
   ta.style.height = 'auto';
-  // wrap preview: scale the typing font so this textarea wraps like the canvas box
-  const boxScreenW = Math.max(48, box.w * cam.zoom);
-  const taW = Math.max(120, Math.min(boxScreenW, window.innerWidth * 0.78, 360));
-  ta.style.fontSize = ((textSize * 2.2) * (taW / boxScreenW)).toFixed(1) + 'px';
+  ta.style.fontSize = ''; // fixed comfortable typing size (CSS 17px): scaling the
+  // font to preview the box's wrapping made narrow boxes unusable (giant font,
+  // one word per line). The canvas behind shows the real wrapping on Place.
   ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(200, ta.scrollHeight) + 'px'; };
-  // anchor the entry box to the release point, Apple-popover style
+  // comfortable fixed-width editor, independent of the canvas box width
+  const taW = Math.min(window.innerWidth * 0.78, 360);
   const ow = taW + 28; // overlay padding
   ov.style.width = ow + 'px';
   ov.style.left = Math.max(12, Math.min(sx - 24, window.innerWidth - ow - 12)) + 'px';
