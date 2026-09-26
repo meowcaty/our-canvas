@@ -1,54 +1,32 @@
+/* 🎨 Our Canvas — one private infinite canvas for two. */
 const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
-const { loadRoom, scheduleSave, hashPassword, newSalt } = require('./store');
+const { loadCanvas, scheduleSave } = require('./store');
+const auth = require('./auth');
+
+auth.initPassword(); // throws if CANVAS_PASSWORD is missing/weak
 
 const app = express();
+app.set('trust proxy', 1); // Render sits behind a proxy — needed for real client IPs
+app.use(express.json({ limit: '10kb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 1e6 });
 
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/health', (req, res) => res.json({ ok: true }));
-
 const PORT = process.env.PORT || 3000;
-const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const MAX_STROKES = 20000;
 const MAX_POINTS_PER_STROKE = 8000;
-const CURSOR_COLORS = ['#ff5d8f', '#4da3ff', '#ffb84d', '#7dde92', '#c792ea', '#ff7a59'];
+const CURSOR_COLORS = ['#ff2d55', '#0a84ff', '#ff9f0a', '#30d158', '#bf5af2', '#ff6482'];
 
-/* room.code -> { code, passHash, salt, strokes: [], clients: Map<socketId, {name,color}> } */
-const rooms = new Map();
+const strokes = loadCanvas();
+console.log(`🎨 loaded ${strokes.length} strokes from disk`);
+const clients = new Map(); // socketId -> {name, color, sessionId}
 
-function makeCode() {
-  let code;
-  do {
-    code = Array.from({ length: 4 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
-  } while (rooms.has(code));
-  return code;
-}
-
-function getRoom(code) {
-  code = String(code || '').trim().toUpperCase();
-  let room = rooms.get(code);
-  if (room) return room;
-  const saved = loadRoom(code);
-  if (!saved) return null;
-  room = { code, passHash: saved.passHash, salt: saved.salt, strokes: saved.strokes, clients: new Map() };
-  rooms.set(code, room);
-  return room;
-}
-
-function checkPassword(room, password) {
-  if (!password) return false;
-  const h = hashPassword(password, room.salt);
-  return h.length === room.passHash.length &&
-    require('crypto').timingSafeEqual(Buffer.from(h), Buffer.from(room.passHash));
-}
-
-function cleanName(name) {
-  return String(name || '').trim().slice(0, 16);
-}
+/* ---------- helpers ---------- */
+const isSecureReq = (req) => req.secure || req.headers['x-forwarded-proto'] === 'https';
 
 function sanitizeStroke(s, authorId, authorName) {
   if (!s || typeof s !== 'object') return null;
@@ -68,7 +46,7 @@ function sanitizeStroke(s, authorId, authorName) {
     const pts = Array.isArray(s.points) ? s.points : [];
     if (tool === 'line' || tool === 'rect' || tool === 'circle') {
       if (pts.length !== 4 || !pts.every(Number.isFinite)) return null;
-      stroke.points = pts.map(n => Math.max(-1e6, Math.min(1e6, n)));
+      stroke.points = pts.map((n) => Math.max(-1e6, Math.min(1e6, n)));
     } else {
       if (pts.length > MAX_POINTS_PER_STROKE * 2) return null;
       const clean = [];
@@ -77,79 +55,104 @@ function sanitizeStroke(s, authorId, authorName) {
         if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
         clean.push(Math.max(-1e6, Math.min(1e6, x)), Math.max(-1e6, Math.min(1e6, y)));
       }
-      stroke.points = clean; // may be empty at stroke-start; points stream in after
+      stroke.points = clean;
     }
   }
   return stroke;
 }
 
-io.on('connection', (socket) => {
-  let room = null;
+/* ---------- HTTP auth API ---------- */
+app.get('/health', (req, res) => res.json({ ok: true }));
 
-  const authed = () => room && room.clients.has(socket.id);
-
-  socket.on('create-room', ({ name, password }, cb) => {
-    const clean = cleanName(name);
-    if (!clean) return cb({ ok: false, error: 'Enter your name first 🎨' });
-    if (!password || String(password).length < 4) return cb({ ok: false, error: 'Password needs at least 4 characters 🔐' });
-    const code = makeCode();
-    const salt = newSalt();
-    room = {
-      code,
-      passHash: hashPassword(password, salt),
-      salt,
-      strokes: [],
-      clients: new Map(),
-    };
-    rooms.set(code, room);
-    joinRoomSocket(room, clean);
-    scheduleSave(room);
-    cb({ ok: true, code });
-  });
-
-  socket.on('join-room', ({ code, name, password }, cb) => {
-    const clean = cleanName(name);
-    if (!clean) return cb({ ok: false, error: 'Enter your name first 🎨' });
-    const r = getRoom(code);
-    if (!r) return cb({ ok: false, error: 'Room not found 💔' });
-    if (!checkPassword(r, password)) {
-      setTimeout(() => cb({ ok: false, error: 'Wrong password 🔐' }), 600); // slow down guessing
-      return;
-    }
-    room = r;
-    joinRoomSocket(room, clean);
-    cb({ ok: true, code: room.code });
-  });
-
-  function joinRoomSocket(r, name) {
-    const color = CURSOR_COLORS[r.clients.size % CURSOR_COLORS.length];
-    r.clients.set(socket.id, { name, color });
-    socket.join(r.code);
-    socket.data.roomCode = r.code;
-    socket.emit('canvas-state', {
-      strokes: r.strokes,
-      peers: [...r.clients.entries()]
-        .filter(([id]) => id !== socket.id)
-        .map(([id, c]) => ({ id, name: c.name, color: c.color })),
-    });
-    socket.to(r.code).emit('peer-join', { id: socket.id, name, color });
+app.post('/api/login', (req, res) => {
+  const ip = auth.getIp(req);
+  const ua = req.headers['user-agent'] || '';
+  if (auth.isBanned(ip)) {
+    const { bannedUntil } = auth.banInfo(ip);
+    const hours = Math.max(1, Math.ceil((bannedUntil - Date.now()) / 3600000));
+    return res.status(403).json({ ok: false, banned: true, error: `This device is blocked. Try again in ~${hours}h.` });
   }
+  if (auth.verifyPassword(req.body && req.body.password)) {
+    auth.recordAttempt(ip, ua, true);
+    const token = auth.createSession();
+    res.setHeader('Set-Cookie', auth.sessionCookie(token, isSecureReq(req)));
+    return res.json({ ok: true });
+  }
+  const info = auth.recordAttempt(ip, ua, false);
+  if (info.bannedUntil > Date.now()) {
+    return res.status(403).json({ ok: false, banned: true, error: 'Too many wrong attempts. This device is blocked for 24h.' });
+  }
+  res.status(401).json({ ok: false, error: 'Wrong password', remaining: info.remaining });
+});
 
-  /* ---------- live drawing ---------- */
+app.get('/api/me', (req, res) => {
+  const token = auth.parseCookies(req.headers.cookie).canvas_session;
+  const sess = auth.getSession(token);
+  if (!sess) return res.status(401).json({ ok: false });
+  res.json({ ok: true, name: sess.name || '' });
+});
+
+app.post('/api/name', (req, res) => {
+  const token = auth.parseCookies(req.headers.cookie).canvas_session;
+  if (!auth.getSession(token)) return res.status(401).json({ ok: false });
+  const name = String((req.body && req.body.name) || '').trim().slice(0, 16);
+  if (!name) return res.status(400).json({ ok: false, error: 'Enter a name' });
+  auth.setSessionName(token, name);
+  res.json({ ok: true, name });
+});
+
+app.post('/api/logout', (req, res) => {
+  const token = auth.parseCookies(req.headers.cookie).canvas_session;
+  auth.destroySession(token);
+  res.setHeader('Set-Cookie', 'canvas_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+  res.json({ ok: true });
+});
+
+/* ---------- sockets: session required ---------- */
+io.use((socket, next) => {
+  const ip = auth.getSocketIp(socket.handshake);
+  if (auth.isBanned(ip)) return next(new Error('banned'));
+  const token = auth.parseCookies(socket.handshake.headers.cookie).canvas_session;
+  const sess = auth.getSession(token);
+  if (!sess) return next(new Error('unauthorized'));
+  socket.data.sessionId = auth.parseCookies(socket.handshake.headers.cookie).canvas_session;
+  socket.data.ip = ip;
+  next();
+});
+
+io.on('connection', (socket) => {
+  const token = auth.parseCookies(socket.handshake.headers.cookie).canvas_session;
+  const sess = auth.getSession(token);
+  const name = (sess && sess.name) || 'Guest';
+  const color = CURSOR_COLORS[clients.size % CURSOR_COLORS.length];
+  // stable author id from the session token — survives reconnects, so undo keeps working
+  const authorId = 'u:' + auth.tokenHash(token).slice(0, 16);
+  clients.set(socket.id, { name, color, authorId });
+
+  socket.emit('canvas-state', {
+    strokes,
+    me: { name, color },
+    peers: [...clients.entries()]
+      .filter(([id]) => id !== socket.id)
+      .map(([id, c]) => ({ id, name: c.name, color: c.color })),
+  });
+  socket.broadcast.emit('peer-join', { id: socket.id, name, color });
+
   socket.on('stroke-start', (s) => {
-    if (!authed()) return;
-    const me = room.clients.get(socket.id);
-    const stroke = sanitizeStroke(s, socket.id, me.name);
-    if (!stroke || room.strokes.length >= MAX_STROKES) return;
-    if (room.strokes.some(x => x.id === stroke.id)) return;
-    room.strokes.push(stroke);
-    socket.to(room.code).emit('stroke-start', stroke);
+    const c = clients.get(socket.id);
+    if (!c) return;
+    const stroke = sanitizeStroke(s, c.authorId, c.name);
+    if (!stroke || strokes.length >= MAX_STROKES) return;
+    if (strokes.some((x) => x.id === stroke.id)) return;
+    strokes.push(stroke);
+    socket.broadcast.emit('stroke-start', stroke);
   });
 
   socket.on('stroke-point', ({ id, points }) => {
-    if (!authed()) return;
-    const stroke = room.strokes.find(x => x.id === id);
-    if (!stroke || stroke.authorId !== socket.id || !Array.isArray(points)) return;
+    const c = clients.get(socket.id);
+    if (!c) return;
+    const stroke = strokes.find((x) => x.id === id);
+    if (!stroke || stroke.authorId !== c.authorId || !Array.isArray(points)) return;
     const clean = [];
     for (let i = 0; i + 1 < points.length && stroke.points.length + clean.length < MAX_POINTS_PER_STROKE * 2; i += 2) {
       const x = Number(points[i]), y = Number(points[i + 1]);
@@ -158,62 +161,58 @@ io.on('connection', (socket) => {
     }
     if (!clean.length) return;
     stroke.points.push(...clean);
-    socket.to(room.code).emit('stroke-point', { id, points: clean });
+    socket.broadcast.emit('stroke-point', { id, points: clean });
   });
 
   socket.on('stroke-end', ({ id }) => {
-    if (!authed()) return;
-    const stroke = room.strokes.find(x => x.id === id);
-    if (!stroke || stroke.authorId !== socket.id) return;
-    scheduleSave(room);
-    socket.to(room.code).emit('stroke-end', { id });
+    const c = clients.get(socket.id);
+    if (!c) return;
+    const stroke = strokes.find((x) => x.id === id);
+    if (!stroke || stroke.authorId !== c.authorId) return;
+    scheduleSave(strokes);
+    socket.broadcast.emit('stroke-end', { id });
   });
 
-  /* re-add a stroke (redo) */
   socket.on('stroke-add', (s) => {
-    if (!authed()) return;
-    const me = room.clients.get(socket.id);
-    const stroke = sanitizeStroke(s, socket.id, me.name);
-    if (!stroke || room.strokes.length >= MAX_STROKES) return;
-    if (room.strokes.some(x => x.id === stroke.id)) return;
-    room.strokes.push(stroke);
-    scheduleSave(room);
-    io.to(room.code).emit('stroke-add', stroke);
+    const c = clients.get(socket.id);
+    if (!c) return;
+    const stroke = sanitizeStroke(s, c.authorId, c.name);
+    if (!stroke || strokes.length >= MAX_STROKES) return;
+    if (strokes.some((x) => x.id === stroke.id)) return;
+    strokes.push(stroke);
+    scheduleSave(strokes);
+    io.emit('stroke-add', stroke);
   });
 
   socket.on('stroke-undo', ({ id }) => {
-    if (!authed()) return;
-    const i = room.strokes.findIndex(x => x.id === id);
-    if (i < 0 || room.strokes[i].authorId !== socket.id) return;
-    room.strokes.splice(i, 1);
-    scheduleSave(room);
-    io.to(room.code).emit('stroke-remove', { id });
+    const c = clients.get(socket.id);
+    if (!c) return;
+    const i = strokes.findIndex((x) => x.id === id);
+    if (i < 0 || strokes[i].authorId !== c.authorId) return;
+    strokes.splice(i, 1);
+    scheduleSave(strokes);
+    io.emit('stroke-remove', { id });
   });
 
   socket.on('canvas-clear', () => {
-    if (!authed()) return;
-    room.strokes = [];
-    scheduleSave(room);
-    io.to(room.code).emit('canvas-clear');
+    if (!clients.get(socket.id)) return;
+    strokes.length = 0;
+    scheduleSave(strokes);
+    io.emit('canvas-clear');
   });
 
-  /* partner's live cursor */
   socket.on('cursor', ({ x, y }) => {
-    if (!authed()) return;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    const me = room.clients.get(socket.id);
-    socket.to(room.code).emit('peer-cursor', { id: socket.id, name: me.name, color: me.color, x, y });
+    const c = clients.get(socket.id);
+    if (!c || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    socket.broadcast.emit('peer-cursor', { id: socket.id, name: c.name, color: c.color, x, y });
   });
 
   socket.on('disconnect', () => {
-    if (room) {
-      room.clients.delete(socket.id);
-      socket.to(room.code).emit('peer-leave', { id: socket.id });
-      if (room.clients.size === 0) rooms.delete(room.code); // strokes stay on disk
-    }
+    clients.delete(socket.id);
+    socket.broadcast.emit('peer-leave', { id: socket.id });
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`🎨 Collab Canvas — http://localhost:${PORT}`);
+  console.log(`🎨 Our Canvas — http://localhost:${PORT}`);
 });

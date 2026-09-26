@@ -1,76 +1,130 @@
-/* 🎨 Our Canvas — infinite collaborative whiteboard */
+/* 🎨 Our Canvas — one private infinite canvas for two */
 (() => {
 'use strict';
 
-const socket = io();
 const $ = (s) => document.querySelector(s);
-
-/* ================= home ================= */
-const params = new URLSearchParams(location.search);
-if (params.get('room')) $('#inp-join-code').value = params.get('room').toUpperCase();
-
-$('#tab-create').onclick = () => {
-  $('#tab-create').classList.add('active'); $('#tab-join').classList.remove('active');
-  $('#pane-create').classList.remove('hidden'); $('#pane-join').classList.add('hidden');
-};
-$('#tab-join').onclick = () => {
-  $('#tab-join').classList.add('active'); $('#tab-create').classList.remove('active');
-  $('#pane-join').classList.remove('hidden'); $('#pane-create').classList.add('hidden');
-};
-
-const homeError = (msg) => { $('#home-error').textContent = msg || ''; };
-const myName = () => $('#inp-name').value.trim().slice(0, 16);
-
-$('#btn-create').onclick = () => {
-  const name = myName();
-  if (!name) return homeError('Enter your name first 🎨');
-  const pass = $('#inp-create-pass').value;
-  socket.emit('create-room', { name, password: pass }, (res) => {
-    if (!res.ok) return homeError(res.error);
-    enterRoom(res.code, name);
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
-};
-$('#btn-join').onclick = () => {
-  const name = myName();
-  if (!name) return homeError('Enter your name first 🎨');
-  socket.emit('join-room', {
-    code: $('#inp-join-code').value.trim().toUpperCase(),
-    name,
-    password: $('#inp-join-pass').value,
-  }, (res) => {
-    if (!res.ok) return homeError(res.error);
-    enterRoom(res.code, name);
-  });
+  let body = {};
+  try { body = await res.json(); } catch {}
+  return { status: res.status, ...body };
 };
 
-/* ================= room state ================= */
-let roomCode = null;
+/* ================= theme ================= */
+function currentTheme() { return document.documentElement.dataset.theme || 'dark'; }
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('ourcanvas_theme', t); } catch {}
+  $('#btn-theme').textContent = t === 'dark' ? '🌙' : '☀️';
+  document.querySelector('meta[name="theme-color"]').content = t === 'dark' ? '#000000' : '#f2f2f7';
+  refreshThemeColors();
+  // keep the default ink readable when the theme flips
+  if (color === '#ffffff' && t === 'light') setColor('#1c1c1e');
+  if (color === '#1c1c1e' && t === 'dark') setColor('#ffffff');
+  dirty = true;
+}
+let themeColors = { bg: '#060609', dot: 'rgba(255,255,255,.08)' };
+function refreshThemeColors() {
+  const cs = getComputedStyle(document.documentElement);
+  themeColors.bg = cs.getPropertyValue('--canvas-bg').trim() || themeColors.bg;
+  themeColors.dot = cs.getPropertyValue('--dot').trim() || themeColors.dot;
+}
+
+/* ================= boot flow ================= */
+let myName = '';
+try { myName = localStorage.getItem('ourcanvas_name') || ''; } catch {}
+
+async function boot() {
+  applyTheme(currentTheme());
+  const me = await api('/api/me');
+  if (me.ok) {
+    if (me.name) { myName = me.name; enterCanvas(); }
+    else showNameScreen();
+  } else {
+    showLockScreen();
+  }
+}
+
+function showLockScreen() {
+  $('#screen-lock').classList.remove('hidden');
+  $('#screen-name').classList.add('hidden');
+  $('#screen-canvas').classList.add('hidden');
+  setTimeout(() => $('#inp-password').focus(), 100);
+}
+function showNameScreen() {
+  $('#screen-lock').classList.add('hidden');
+  $('#screen-name').classList.remove('hidden');
+  $('#screen-canvas').classList.add('hidden');
+  if (myName) $('#inp-myname').value = myName;
+  setTimeout(() => $('#inp-myname').focus(), 100);
+}
+
+$('#btn-unlock').onclick = doUnlock;
+$('#inp-password').addEventListener('keydown', (e) => { if (e.key === 'Enter') doUnlock(); });
+async function doUnlock() {
+  const pw = $('#inp-password').value;
+  $('#lock-error').textContent = '';
+  const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ password: pw }) });
+  if (r.ok) {
+    $('#inp-password').value = '';
+    const me = await api('/api/me');
+    if (me.ok && me.name) { myName = me.name; enterCanvas(); }
+    else showNameScreen();
+  } else if (r.banned) {
+    $('#lock-form').classList.add('hidden');
+    $('#lock-blocked').classList.remove('hidden');
+    $('#blocked-msg').textContent = r.error;
+  } else {
+    const left = r.remaining > 0 ? ` · ${r.remaining} attempt${r.remaining === 1 ? '' : 's'} left` : '';
+    $('#lock-error').textContent = (r.error || 'Wrong password') + left;
+    $('#lock-hint').textContent = r.remaining <= 1 ? 'Careful — 3 wrong tries blocks this device for 24h.' : '';
+  }
+}
+
+$('#btn-savename').onclick = saveName;
+$('#inp-myname').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
+async function saveName() {
+  const name = $('#inp-myname').value.trim().slice(0, 16);
+  if (!name) { $('#name-error').textContent = 'Tell us your name 💕'; return; }
+  const r = await api('/api/name', { method: 'POST', body: JSON.stringify({ name }) });
+  if (r.ok) {
+    myName = r.name;
+    try { localStorage.setItem('ourcanvas_name', myName); } catch {}
+    enterCanvas();
+  } else {
+    $('#name-error').textContent = r.error || 'Something went wrong';
+  }
+}
+
+/* ================= canvas state ================= */
+let socket = null;
 const cam = { x: 0, y: 0, zoom: 1 };
-const strokes = new Map();          // id -> stroke
-const peers = new Map();            // socketId -> {name,color,x,y,last}
-const myStrokeIds = [];             // my strokes, creation order (for undo)
-const redoStack = [];               // {id, stroke}
+const strokes = new Map();
+const peers = new Map();
+const myStrokeIds = [];
+const redoStack = [];
 let strokeSeq = 0;
 let dirty = true;
 
 let tool = 'pen';
-let color = '#ffffff';
+let color = currentTheme() === 'dark' ? '#ffffff' : '#1c1c1e';
 let brushSize = 8;
 
-const PALETTE = ['#ffffff', '#111111', '#ff5d8f', '#ff7a59', '#ffb84d', '#ffee58',
-  '#7dde92', '#4da3ff', '#9b6bff', '#c792ea', '#5dd4d4', '#ff9ecb'];
+const PALETTE = ['#ffffff', '#1c1c1e', '#ff2d55', '#ff7a59', '#ff9f0a', '#ffcc00',
+  '#30d158', '#0a84ff', '#bf5af2', '#64d2ff', '#ff6482', '#ac8e68'];
 
-function enterRoom(code, name) {
-  roomCode = code;
-  $('#screen-home').classList.add('hidden');
-  $('#screen-room').classList.remove('hidden');
-  $('#room-code').textContent = code;
-  history.replaceState(null, '', `?room=${code}`);
-  toast(`Welcome, ${name}! 💞`);
+function enterCanvas() {
+  $('#screen-lock').classList.add('hidden');
+  $('#screen-name').classList.add('hidden');
+  $('#screen-canvas').classList.remove('hidden');
   resize();
+  if (!socket) connectSocket();
 }
 
-/* ================= canvas ================= */
+/* ================= canvas setup ================= */
 const canvas = $('#board');
 const ctx = canvas.getContext('2d');
 let dpr = 1, cssW = 0, cssH = 0;
@@ -108,7 +162,7 @@ function drawStroke(s) {
 
   if (s.tool === 'text') {
     ctx.fillStyle = s.color;
-    ctx.font = `${s.size * 2.2}px -apple-system, "Segoe UI", sans-serif`;
+    ctx.font = `${s.size * 2.2}px -apple-system, "SF Pro Text", sans-serif`;
     ctx.fillText(s.text, s.x, s.y);
     ctx.restore();
     return;
@@ -126,11 +180,9 @@ function drawStroke(s) {
   }
 
   if (s.tool === 'eraser') ctx.globalCompositeOperation = 'destination-out';
-
   if (!s.points || s.points.length < 2) { ctx.restore(); return; }
 
-  // tap = dot
-  if (s.points && s.points.length < 4 && s.points.length >= 2) {
+  if (s.points.length < 4) { // tap = dot
     ctx.fillStyle = s.tool === 'eraser' ? '#000' : s.color;
     ctx.globalAlpha = s.tool === 'highlighter' ? 0.32 : 1;
     ctx.beginPath();
@@ -164,14 +216,14 @@ function render() {
   dirty = false;
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.fillStyle = themeColors.bg;
+  ctx.fillRect(0, 0, cssW, cssH);
   applyCam();
 
-  // dot grid — sells the "infinite" feel while panning
   const step = 90;
   const x0 = cam.x - cssW / 2 / cam.zoom, x1 = cam.x + cssW / 2 / cam.zoom;
   const y0 = cam.y - cssH / 2 / cam.zoom, y1 = cam.y + cssH / 2 / cam.zoom;
-  ctx.fillStyle = 'rgba(185,168,214,0.16)';
+  ctx.fillStyle = themeColors.dot;
   for (let gx = Math.floor(x0 / step) * step; gx <= x1; gx += step)
     for (let gy = Math.floor(y0 / step) * step; gy <= y1; gy += step) {
       ctx.beginPath(); ctx.arc(gx, gy, 1.4, 0, Math.PI * 2); ctx.fill();
@@ -180,18 +232,16 @@ function render() {
   for (const s of strokes.values()) drawStroke(s);
   if (activeStroke && activeStroke.points.length >= 2) drawStroke(activeStroke);
 
-  // shape preview
   if (previewShape) {
     ctx.save();
     ctx.setLineDash([10 / cam.zoom, 8 / cam.zoom]);
-    drawStroke({ ...previewShape, color: previewShape.color });
+    drawStroke(previewShape);
     ctx.restore();
   }
 
-  // partner cursors
   const now = Date.now();
   ctx.textBaseline = 'top';
-  for (const [id, p] of peers) {
+  for (const [, p] of peers) {
     if (now - p.last > 4000 || p.x === undefined) continue;
     const fade = Math.max(0.25, 1 - (now - p.last) / 4000);
     ctx.save(); ctx.globalAlpha = fade;
@@ -199,27 +249,27 @@ function render() {
     ctx.beginPath(); ctx.arc(p.x, p.y, 7 / cam.zoom, 0, Math.PI * 2); ctx.fill();
     ctx.font = `${13 / cam.zoom}px -apple-system, sans-serif`;
     const w = ctx.measureText(p.name).width;
-    ctx.fillStyle = 'rgba(20,16,31,0.85)';
     const bx = p.x + 12 / cam.zoom, by = p.y + 12 / cam.zoom;
     const pad = 6 / cam.zoom, h = 20 / cam.zoom;
+    ctx.fillStyle = currentTheme() === 'dark' ? 'rgba(28,28,30,.9)' : 'rgba(255,255,255,.92)';
     ctx.beginPath(); ctx.roundRect(bx, by, w + pad * 2, h, h / 2); ctx.fill();
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = currentTheme() === 'dark' ? '#fff' : '#000';
     ctx.fillText(p.name, bx + pad, by + pad * 0.7);
     ctx.restore();
   }
 }
 
 /* ================= input ================= */
-const pointers = new Map();   // pointerId -> {sx, sy}
-let activeStroke = null;      // local stroke being drawn
-let pendingPoints = [];       // batched for network
+const pointers = new Map();
+let activeStroke = null;
+let pendingPoints = [];
 let flushTimer = null;
 let previewShape = null;
 let shapeStart = null;
 let pinch = null;
+let dragLast = null;
 
 function newStrokeId() { return `${socket.id}:${strokeSeq++}`; }
-
 function flushPoints() {
   if (!activeStroke || !pendingPoints.length) return;
   socket.emit('stroke-point', { id: activeStroke.id, points: pendingPoints });
@@ -231,7 +281,6 @@ canvas.addEventListener('pointerdown', (e) => {
   pointers.set(e.pointerId, { sx: e.clientX, sy: e.clientY });
 
   if (pointers.size === 2) {
-    // switch to pinch gesture — commit any in-progress stroke first
     endActiveStroke();
     previewShape = null; shapeStart = null;
     const [a, b] = [...pointers.values()];
@@ -241,9 +290,8 @@ canvas.addEventListener('pointerdown', (e) => {
   if (pointers.size > 2) return;
 
   const w = screenToWorld(e.clientX, e.clientY);
-  if (tool === 'pan') { /* single-finger pan handled in move via drag state */ }
-  else if (tool === 'text') {
-    showTextOverlay(e.clientX, e.clientY, w);
+  if (tool === 'text') {
+    showTextOverlay(w);
     pointers.delete(e.pointerId);
     return;
   } else if (tool === 'line' || tool === 'rect' || tool === 'circle') {
@@ -257,24 +305,19 @@ canvas.addEventListener('pointerdown', (e) => {
   sendCursor(e.clientX, e.clientY);
 });
 
-let dragLast = null;
-
 canvas.addEventListener('pointermove', (e) => {
   sendCursor(e.clientX, e.clientY);
   if (!pointers.has(e.pointerId)) return;
-  const prev = pointers.get(e.pointerId);
   pointers.set(e.pointerId, { sx: e.clientX, sy: e.clientY });
 
   if (pinch && pointers.size >= 2) {
     const [a, b] = [...pointers.values()];
     const d = Math.hypot(a.sx - b.sx, a.sy - b.sy);
     const mx = (a.sx + b.sx) / 2, my = (a.sy + b.sy) / 2;
-    // zoom around midpoint
     const before = screenToWorld(mx, my);
     cam.zoom = Math.min(4, Math.max(0.2, pinch.zoom0 * (d / Math.max(1, pinch.d0))));
     const after = screenToWorld(mx, my);
     cam.x += before.x - after.x; cam.y += before.y - after.y;
-    // pan by midpoint drift
     cam.x -= (mx - pinch.mx) / cam.zoom; cam.y -= (my - pinch.my) / cam.zoom;
     pinch.mx = mx; pinch.my = my;
     dirty = true;
@@ -290,13 +333,11 @@ canvas.addEventListener('pointermove', (e) => {
     dirty = true;
     return;
   }
-
   if (previewShape && shapeStart) {
     previewShape.points = [shapeStart.x, shapeStart.y, w.x, w.y];
     dirty = true;
     return;
   }
-
   if (activeStroke) {
     const evts = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of evts) {
@@ -325,7 +366,6 @@ function endActiveStroke() {
 function endPointer(e) {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
-
   if (previewShape && shapeStart) {
     const s = { id: newStrokeId(), tool: previewShape.tool, color, size: brushSize, points: previewShape.points.slice() };
     strokes.set(s.id, s);
@@ -340,11 +380,10 @@ function endPointer(e) {
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
 
-/* partner cursor, throttled */
 let cursorTimer = 0;
 function sendCursor(sx, sy) {
   const now = Date.now();
-  if (now - cursorTimer < 120 || !roomCode) return;
+  if (now - cursorTimer < 120 || !socket) return;
   cursorTimer = now;
   const w = screenToWorld(sx, sy);
   socket.emit('cursor', { x: Math.round(w.x), y: Math.round(w.y) });
@@ -352,10 +391,9 @@ function sendCursor(sx, sy) {
 
 /* ================= text tool ================= */
 let textWorld = null;
-function showTextOverlay(sx, sy, w) {
+function showTextOverlay(w) {
   textWorld = w;
-  const ov = $('#text-overlay');
-  ov.classList.remove('hidden');
+  $('#text-overlay').classList.remove('hidden');
   $('#inp-text').value = '';
   setTimeout(() => $('#inp-text').focus(), 50);
 }
@@ -386,34 +424,36 @@ document.querySelectorAll('.tool').forEach((btn) => {
 });
 
 const colorsRow = $('#colors-row');
+function setColor(c) {
+  color = c;
+  document.querySelectorAll('.swatch').forEach((x) => x.classList.toggle('active', x.dataset.color === c));
+}
 PALETTE.forEach((c) => {
   const b = document.createElement('button');
   b.className = 'swatch' + (c === color ? ' active' : '');
   b.style.background = c;
-  b.onclick = () => {
-    document.querySelectorAll('.swatch').forEach((x) => x.classList.remove('active'));
-    b.classList.add('active');
-    color = c;
-  };
+  b.dataset.color = c;
+  b.onclick = () => setColor(c);
   colorsRow.appendChild(b);
 });
 const customWrap = document.createElement('label');
 customWrap.className = 'swatch custom';
 customWrap.title = 'custom color';
-customWrap.innerHTML = '<input type="color" value="#ff5d8f">';
+customWrap.innerHTML = '<input type="color" value="#ff2d55">';
 customWrap.querySelector('input').oninput = (e) => {
+  color = e.target.value;
   document.querySelectorAll('.swatch').forEach((x) => x.classList.remove('active'));
   customWrap.classList.add('active');
-  color = e.target.value;
 };
 colorsRow.appendChild(customWrap);
 
 $('#inp-size').oninput = (e) => { brushSize = Number(e.target.value); };
 
 /* ================= top bar ================= */
+$('#btn-theme').onclick = () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
 $('#btn-undo').onclick = () => {
   const id = myStrokeIds.pop();
-  if (!id) return toast('Nothing to undo 🙈');
+  if (!id) return toast('Nothing to undo');
   const s = strokes.get(id);
   strokes.delete(id);
   if (s) redoStack.push({ id, stroke: s });
@@ -422,23 +462,21 @@ $('#btn-undo').onclick = () => {
 };
 $('#btn-redo').onclick = () => {
   const r = redoStack.pop();
-  if (!r) return toast('Nothing to redo 🙈');
+  if (!r) return toast('Nothing to redo');
   strokes.set(r.id, r.stroke);
   myStrokeIds.push(r.id);
   socket.emit('stroke-add', r.stroke);
   dirty = true;
 };
 $('#btn-clear').onclick = () => {
-  if (!confirm('Clear the whole canvas for both of you? 🧹')) return;
+  if (!confirm('Clear the whole canvas for both of you?')) return;
   strokes.clear(); myStrokeIds.length = 0; redoStack.length = 0;
   socket.emit('canvas-clear');
   dirty = true;
 };
-$('#chip-code').onclick = () => {
-  const link = `${location.origin}${location.pathname}?room=${roomCode}`;
-  navigator.clipboard.writeText(link).then(
-    () => toast('Invite link copied! Send it to your person 💌'),
-    () => toast(`Room code: ${roomCode}`));
+$('#btn-lock').onclick = async () => {
+  await api('/api/logout', { method: 'POST' });
+  location.reload();
 };
 
 let toastTimer = null;
@@ -450,53 +488,63 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.add('hidden'), 2200);
 }
 
-/* ================= socket events ================= */
-socket.on('canvas-state', ({ strokes: list, peers: peerList }) => {
-  strokes.clear();
-  for (const s of list) strokes.set(s.id, s);
-  peers.clear();
-  for (const p of peerList) peers.set(p.id, { ...p, last: 0 });
-  dirty = true;
-});
-socket.on('stroke-start', (s) => { strokes.set(s.id, { ...s, points: s.points || [] }); dirty = true; });
-socket.on('stroke-point', ({ id, points }) => {
-  const s = strokes.get(id);
-  if (s && s.points) { s.points.push(...points); dirty = true; }
-});
-socket.on('stroke-end', () => { dirty = true; });
-socket.on('stroke-add', (s) => {
-  if (!strokes.has(s.id)) {
-    strokes.set(s.id, s);
-    const i = myStrokeIds.indexOf(s.id);
-    if (i >= 0) myStrokeIds.splice(i, 1); // my own redo echo
+/* ================= socket ================= */
+function connectSocket() {
+  socket = io();
+  socket.on('connect_error', () => {
+    // session expired or banned → back to the lock screen
+    setTimeout(() => location.reload(), 800);
+  });
+  socket.on('canvas-state', ({ strokes: list, me, peers: peerList }) => {
+    strokes.clear();
+    for (const s of list) strokes.set(s.id, s);
+    peers.clear();
+    for (const p of peerList) peers.set(p.id, { ...p, last: 0 });
     dirty = true;
-  }
-});
-socket.on('stroke-remove', ({ id }) => {
-  strokes.delete(id);
-  const i = myStrokeIds.indexOf(id);
-  if (i >= 0) myStrokeIds.splice(i, 1);
-  dirty = true;
-});
-socket.on('canvas-clear', () => {
-  strokes.clear(); myStrokeIds.length = 0; redoStack.length = 0;
-  toast('Canvas cleared 🧹');
-  dirty = true;
-});
-socket.on('peer-cursor', ({ id, name, color: c, x, y }) => {
-  peers.set(id, { name, color: c, x, y, last: Date.now() });
-  dirty = true;
-});
-socket.on('peer-join', ({ id, name, color: c }) => {
-  peers.set(id, { name, color: c, last: 0 });
-  const el = $('#peer-toast');
-  el.textContent = `${name} joined 💞`;
-  el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 2500);
-});
-socket.on('peer-leave', ({ id }) => { peers.delete(id); dirty = true; });
+    if (me && me.name) toast(`Welcome back, ${me.name} 💕`);
+  });
+  socket.on('stroke-start', (s) => { strokes.set(s.id, { ...s, points: s.points || [] }); dirty = true; });
+  socket.on('stroke-point', ({ id, points }) => {
+    const s = strokes.get(id);
+    if (s && s.points) { s.points.push(...points); dirty = true; }
+  });
+  socket.on('stroke-end', () => { dirty = true; });
+  socket.on('stroke-add', (s) => {
+    if (!strokes.has(s.id)) {
+      strokes.set(s.id, s);
+      const i = myStrokeIds.indexOf(s.id);
+      if (i >= 0) myStrokeIds.splice(i, 1);
+      dirty = true;
+    }
+  });
+  socket.on('stroke-remove', ({ id }) => {
+    strokes.delete(id);
+    const i = myStrokeIds.indexOf(id);
+    if (i >= 0) myStrokeIds.splice(i, 1);
+    dirty = true;
+  });
+  socket.on('canvas-clear', () => {
+    strokes.clear(); myStrokeIds.length = 0; redoStack.length = 0;
+    toast('Canvas cleared');
+    dirty = true;
+  });
+  socket.on('peer-cursor', ({ id, name, color: c, x, y }) => {
+    peers.set(id, { name, color: c, x, y, last: Date.now() });
+    dirty = true;
+  });
+  socket.on('peer-join', ({ id, name, color: c }) => {
+    peers.set(id, { name, color: c, last: 0 });
+    const el = $('#peer-toast');
+    el.textContent = `${name} is here 💞`;
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 2500);
+  });
+  socket.on('peer-leave', ({ id }) => { peers.delete(id); dirty = true; });
+}
 
 /* ================= go ================= */
 resize();
+refreshThemeColors();
 render();
+boot();
 })();

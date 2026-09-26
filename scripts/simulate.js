@@ -1,105 +1,153 @@
-// Tests the collab canvas server: auth, sync, undo, persistence.
-// Run: (PORT=3456 node server.js &) && TEST_PORT=3456 node scripts/simulate.js
-const { io } = require('socket.io-client');
-const { loadRoom } = require('../store');
+// Tests Our Canvas: password auth, 3-strike IP ban, sessions, sync, undo, persistence.
+// Run: CANVAS_PASSWORD=test-password-123 TEST_PORT=3456 node scripts/simulate.js
+process.env.CANVAS_PASSWORD = process.env.CANVAS_PASSWORD || 'test-password-123';
+const TEST_PORT = Number(process.env.TEST_PORT || 3456);
+process.env.PORT = TEST_PORT;
 
-const PORT = process.env.TEST_PORT || 3456;
-const URL = `http://localhost:${PORT}`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const auth = require('../auth');
+auth.initPassword();
+auth._reset();
 
-function once(sock, ev, timeoutMs = 8000) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('timeout waiting for ' + ev)), timeoutMs);
-    sock.once(ev, (d) => { clearTimeout(t); resolve(d); });
-  });
+const results = [];
+function check(name, cond) {
+  results.push([name, !!cond]);
+  console.log(`${cond ? '✅' : '❌'} ${name}`);
 }
-const emitAck = (sock, ev, data) => new Promise((res) => sock.emit(ev, data, res));
+
+/* ---------- auth unit tests ---------- */
+check('unit: correct password verifies', auth.verifyPassword(process.env.CANVAS_PASSWORD));
+check('unit: wrong password rejected', !auth.verifyPassword('nope-nope-nope'));
+check('unit: not banned initially', !auth.isBanned('9.9.9.9'));
+auth.recordAttempt('9.9.9.9', 'TestAgent/1.0', false);
+auth.recordAttempt('9.9.9.9', 'TestAgent/1.0', false);
+check('unit: 2 fails → not banned yet', !auth.isBanned('9.9.9.9'));
+const info3 = auth.recordAttempt('9.9.9.9', 'TestAgent/1.0', false);
+check('unit: 3rd fail → banned', auth.isBanned('9.9.9.9') && info3.bannedUntil > Date.now());
+check('unit: ban info shows 0 remaining', auth.banInfo('9.9.9.9').remaining === 0);
+auth._reset();
+auth.recordAttempt('9.9.9.9', 'TestAgent/1.0', false);
+auth.recordAttempt('9.9.9.9', 'TestAgent/1.0', true);
+check('unit: success resets fail count', !auth.isBanned('9.9.9.9') && auth.banInfo('9.9.9.9').remaining === 3);
+const tok = auth.createSession();
+check('unit: session created & readable', !!auth.getSession(tok));
+check('unit: setSessionName works', auth.setSessionName(tok, 'Abi') && auth.getSession(tok).name === 'Abi');
+auth.destroySession(tok);
+check('unit: destroyed session invalid', !auth.getSession(tok));
+auth._reset(); // clean slate for integration
+
+/* ---------- integration tests ---------- */
+require('../server.js'); // starts listening on TEST_PORT
+const { io } = require('socket.io-client');
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function login(password) {
+  const res = await fetch(`http://localhost:${TEST_PORT}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  const body = await res.json().catch(() => ({}));
+  return { status: res.status, body, cookie: res.headers.get('set-cookie') };
+}
+const once = (sock, ev, timeout = 4000) =>
+  new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('timeout: ' + ev)), timeout);
+    sock.once(ev, (d) => { clearTimeout(t); res(d); });
+  });
 
 (async () => {
-  const results = [];
-  const check = (name, cond) => { results.push(!!cond); console.log((cond ? '  ✅ ' : '  ❌ ') + name); };
+  await sleep(600);
 
-  const a = io(URL), b = io(URL);
-  await Promise.all([once(a, 'connect'), once(b, 'connect')]);
-  check('both clients connect', true);
+  // 3-strike ban over HTTP
+  const w1 = await login('wrong-1');
+  const w2 = await login('wrong-2');
+  const w3 = await login('wrong-3');
+  check('http: wrong pw → 401', w1.status === 401 && w1.body.remaining === 2);
+  check('http: 2nd wrong → 401, 1 left', w2.status === 401 && w2.body.remaining === 1);
+  check('http: 3rd wrong → 403 banned', w3.status === 403 && w3.body.banned === true);
+  const blocked = await login(process.env.CANVAS_PASSWORD);
+  check('http: correct pw while banned → still 403', blocked.status === 403);
 
-  // create room with password
-  const created = await emitAck(a, 'create-room', { name: 'Percy', password: 'secret123' });
-  check('create-room returns code', created.ok && /^[A-Z0-9]{4}$/.test(created.code));
-  const code = created.code;
+  auth._reset(); // lift the test ban
 
-  // wrong password rejected
-  const badJoin = await emitAck(b, 'join-room', { code, name: 'Abi', password: 'nope' });
-  check('wrong password rejected', !badJoin.ok);
+  // happy-path login
+  const good = await login(process.env.CANVAS_PASSWORD);
+  check('http: correct pw → 200 + session cookie', good.status === 200 && /canvas_session=/.test(good.cookie || ''));
+  check('http: session cookie is HttpOnly + SameSite=Strict', /HttpOnly/i.test(good.cookie) && /SameSite=Strict/i.test(good.cookie));
+  const cookie = (good.cookie || '').split(';')[0];
 
-  // right password works, empty canvas
-  const stateP = once(b, 'canvas-state');
-  const joined = await emitAck(b, 'join-room', { code, name: 'Abi', password: 'secret123' });
-  const state = await stateP;
-  check('correct password joins', joined.ok);
-  check('new room canvas is empty', Array.isArray(state.strokes) && state.strokes.length === 0);
+  const meAnon = await fetch(`http://localhost:${TEST_PORT}/api/me`);
+  check('http: /api/me without cookie → 401', meAnon.status === 401);
+  const meRes = await fetch(`http://localhost:${TEST_PORT}/api/me`, { headers: { cookie } });
+  const meBody = await meRes.json();
+  check('http: /api/me with cookie → ok, no name yet', meRes.status === 200 && meBody.ok && meBody.name === '');
 
-  // live stroke sync: a draws, b receives start/point/end
-  const stroke = { id: 's1', tool: 'neon', color: '#ff5d8f', size: 10, points: [] };
-  const startP = once(b, 'stroke-start');
-  a.emit('stroke-start', stroke);
-  const gotStart = await startP;
-  check('stroke-start syncs', gotStart.id === 's1' && gotStart.tool === 'neon');
+  const nameRes = await fetch(`http://localhost:${TEST_PORT}/api/name`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', cookie },
+    body: JSON.stringify({ name: 'Abi' }),
+  });
+  const nameBody = await nameRes.json();
+  check('http: set name once → ok', nameRes.status === 200 && nameBody.name === 'Abi');
 
-  const pointP = once(b, 'stroke-point');
-  a.emit('stroke-point', { id: 's1', points: [0, 0, 10, 10, 20, 5] });
-  const gotPoints = await pointP;
-  check('stroke-point syncs', gotPoints.id === 's1' && gotPoints.points.length === 6);
+  // sockets: authed vs unauthed
+  const sockA = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie } });
+  const stateA = await once(sockA, 'canvas-state');
+  check('socket: authed client gets canvas-state with name', Array.isArray(stateA.strokes) && stateA.me.name === 'Abi');
 
-  const endP = once(b, 'stroke-end');
-  a.emit('stroke-end', { id: 's1' });
-  await endP;
-  check('stroke-end syncs', true);
+  const sockBare = io(`http://localhost:${TEST_PORT}`);
+  let bareFailed = false;
+  sockBare.on('connect_error', () => { bareFailed = true; });
+  await sleep(900);
+  check('socket: no session → rejected', bareFailed && !sockBare.connected);
+  sockBare.close();
 
-  // shape via stroke-add
-  const addP = once(b, 'stroke-add');
-  a.emit('stroke-add', { id: 's2', tool: 'circle', color: '#4da3ff', size: 6, points: [0, 0, 100, 100] });
-  const gotAdd = await addP;
-  check('shape stroke-add syncs', gotAdd.id === 's2' && gotAdd.tool === 'circle');
+  // second user: Percy
+  const loginP = await login(process.env.CANVAS_PASSWORD);
+  const cookieP = (loginP.cookie || '').split(';')[0];
+  await fetch(`http://localhost:${TEST_PORT}/api/name`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', cookie: cookieP },
+    body: JSON.stringify({ name: 'Percy' }),
+  });
+  const sockP = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie: cookieP } });
+  const stateP = await once(sockP, 'canvas-state');
+  check('socket: second user joins with own name', stateP.me.name === 'Percy');
 
-  // undo by non-author is ignored
-  b.emit('stroke-undo', { id: 's1' });
-  await sleep(300);
-  const c = io(URL);
-  await once(c, 'connect');
-  const cStateP = once(c, 'canvas-state');
-  await emitAck(c, 'join-room', { code, name: 'Maya', password: 'secret123' });
-  const cState = await cStateP;
-  check('non-author undo ignored', cState.strokes.some((s) => s.id === 's1'));
+  // live draw sync Abi → Percy
+  const seenByPercy = once(sockP, 'stroke-add');
+  const s1 = { id: 't1', tool: 'pen', color: '#ff2d55', size: 8, points: [0, 0, 40, 40] };
+  sockA.emit('stroke-add', s1);
+  const got = await seenByPercy;
+  check('sync: stroke-add reaches partner live', got && got.id === 't1' && got.author === 'Abi');
 
-  // undo by author removes for everyone
-  const remP = once(b, 'stroke-remove');
-  a.emit('stroke-undo', { id: 's1' });
-  const removed = await remP;
-  check('author undo removes stroke', removed.id === 's1');
+  // undo: author-only
+  sockP.emit('stroke-undo', { id: 't1' }); // Percy's undo of Abi's stroke → must be ignored
+  await sleep(500);
+  const sockC = io(`http://localhost:${TEST_PORT}`, { extraHeaders: { cookie: cookieP } });
+  const stateC = await once(sockC, 'canvas-state');
+  check("authz: partner cannot undo your stroke (still present)", stateC.strokes.some((x) => x.id === 't1'));
+  sockC.close();
+  const removedOnA = once(sockA, 'stroke-remove');
+  sockA.emit('stroke-undo', { id: 't1' });
+  const removed = await removedOnA;
+  check('undo: author undo removes stroke for everyone', removed && removed.id === 't1');
 
-  // persistence: strokes hit disk
-  await sleep(2200); // debounced save
-  const saved = loadRoom(code);
-  check('room persisted to disk', !!saved && saved.strokes.some((s) => s.id === 's2') && !saved.strokes.some((s) => s.id === 's1'));
-  check('password stored hashed', !!saved && saved.passHash !== 'secret123' && saved.passHash.length === 64);
+  // persistence
+  const s2 = { id: 't2', tool: 'neon', color: '#0a84ff', size: 10, points: [5, 5, 60, 60] };
+  sockA.emit('stroke-add', s2);
+  await sleep(2200); // debounce window
+  const fs = require('fs');
+  const saved = JSON.parse(fs.readFileSync(require('path').join(__dirname, '..', 'data', 'canvas.json'), 'utf8'));
+  check('persist: strokes saved to disk', saved.strokes.some((x) => x.id === 't2'));
 
-  // clear canvas
-  const clearP = once(b, 'canvas-clear');
-  a.emit('canvas-clear');
-  await clearP;
-  check('canvas-clear syncs', true);
-  await sleep(2200);
-  check('clear persisted', loadRoom(code).strokes.length === 0);
+  // clear
+  const clearedOnP = once(sockP, 'canvas-clear');
+  sockA.emit('canvas-clear');
+  await clearedOnP;
+  check('clear: broadcast to partner', true);
 
-  // short password rejected
-  const d = io(URL);
-  await once(d, 'connect');
-  const weak = await emitAck(d, 'create-room', { name: 'X', password: 'abc' });
-  check('short password rejected', !weak.ok);
+  sockA.close(); sockP.close();
 
-  [a, b, c, d].forEach((s) => s.disconnect());
-  const passed = results.filter(Boolean).length;
-  console.log(`\n${passed}/${results.length} checks passed`);
-  process.exit(passed === results.length ? 0 : 1);
-})().catch((e) => { console.error('FATAL:', e.message); process.exit(1); });
+  const failed = results.filter(([, ok]) => !ok);
+  console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
+  process.exit(failed.length ? 1 : 0);
+})().catch((e) => { console.error('FATAL', e); process.exit(1); });

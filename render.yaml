@@ -9,3 +9,5 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      - key: CANVAS_PASSWORD
+        sync: false # set the real password in the Render dashboard → Environment
