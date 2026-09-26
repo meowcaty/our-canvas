@@ -80,15 +80,21 @@ check('cache: same input → same array', a === b);
 s.text = 'hello';
 check('cache: edit invalidates', wrapText(s) !== a && wrapText(s)[0] === 'hello');
 
-// ---- resize: handles change the BOX, never the font size ----
-const rs = (s2, opp, cur) => { applyResize(s2, { opposite: opp }, cur); return s2; };
-let t = rs(T({ x: 100, y: 50, w: 200, size: 18 }), { x: 100, y: 0 }, { x: 350, y: 90 });
-check('resize right: width grows, x anchored', t.w === 250 && t.x === 100);
-check('resize right: y and size untouched', t.y === 50 && t.size === 18);
-t = rs(T({ x: 100, y: 50, w: 200, size: 18 }), { x: 300, y: 0 }, { x: 50, y: 90 });
-check('resize left: box grows leftward', t.w === 250 && t.x === 50);
-t = rs(T({ x: 100, y: 50, w: 200, size: 18 }), { x: 100, y: 0 }, { x: 105, y: 90 });
+// ---- resize: edges reflow the box, corners scale the type ----
+const rs = (s2, g, cur) => { applyResize(s2, g, cur); return s2; };
+const edgeG = (corner, opp) => ({ handle: { corner }, opposite: opp });
+let t = rs(T({ x: 100, y: 50, w: 200, size: 18 }), edgeG('r', { x: 100, y: 0 }), { x: 350, y: 90 });
+check('resize right edge: width grows, x anchored', t.w === 250 && t.x === 100);
+check('resize right edge: y and size untouched', t.y === 50 && t.size === 18);
+t = rs(T({ x: 100, y: 50, w: 200, size: 18 }), edgeG('l', { x: 300, y: 0 }), { x: 50, y: 90 });
+check('resize left edge: box grows leftward', t.w === 250 && t.x === 50);
+t = rs(T({ x: 100, y: 50, w: 200, size: 18 }), edgeG('r', { x: 100, y: 0 }), { x: 105, y: 90 });
 check('resize: width floored at 24', t.w === 24);
+t = rs(T({ x: 100, y: 50, w: 200, size: 18 }),
+  { handle: { corner: 'br' }, startW: { x: 300, y: 170 }, opposite: { x: 100, y: 50 },
+    origText: { x: 100, y: 50, w: 200, size: 18 } }, { x: 400, y: 230 });
+check('resize corner: font scales with the box', t.size === 27 && t.w === 300);
+check('resize corner: opposite corner anchored', t.x === 100 && t.y === 50);
 
 const failed = results.filter((ok) => !ok).length;
 console.log(`\n${results.length - failed}/${results.length} checks passed`);

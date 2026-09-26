@@ -312,11 +312,23 @@ function drawStroke(s) {
   if (s.tool === 'text') {
     ctx.fillStyle = C;
     const fs = textFontPx(s);
-    ctx.font = `${fs}px -apple-system, "SF Pro Text", sans-serif`;
+    ctx.font = `${fs}px ${textFontCss(s)}`;
     // Pin the baseline explicitly: glyphs hang below (s.x, s.y).
     // (Previously this relied on leftover context state from the peer-name
     //  labels, which also made the selection box disagree with the render.)
     ctx.textBaseline = 'top';
+    // subtle Apple-style pop when the font changes: a quick settle, no bounce
+    if (s._fontPop) {
+      const p = Math.min(1, (performance.now() - s._fontPop) / 320);
+      if (p >= 1) delete s._fontPop;
+      else {
+        const e = 1 - Math.pow(1 - p, 3);
+        const k = 0.94 + 0.06 * e;
+        ctx.translate(s.x, s.y); ctx.scale(k, k); ctx.translate(-s.x, -s.y);
+        ctx.globalAlpha = 0.2 + 0.8 * e;
+        fontAnimActive = true;
+      }
+    }
     const lines = wrapText(s);
     const lh = fs * TEXT_LINE_H;
     for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], s.x, s.y + i * lh);
@@ -340,6 +352,7 @@ function drawStroke(s) {
   if (s.points.length < 4) { // tap = dot
     ctx.fillStyle = C;
     ctx.globalAlpha = s.tool === 'highlighter' ? 0.32 : 1;
+    if (s.tool === 'neon') { ctx.shadowColor = C; ctx.shadowBlur = s.size * 5; }
     ctx.beginPath();
     ctx.arc(s.points[0], s.points[1], (s.size * (s.tool === 'eraser' ? 2.2 : 1)) / 2, 0, Math.PI * 2);
     ctx.fill();
@@ -347,9 +360,33 @@ function drawStroke(s) {
     return;
   }
 
-  const passes = s.tool === 'neon'
-    ? [[3.2, 0.20, C], [1.8, 0.45, C], [1.0, 1, C], [0.45, 0.9, '#ffffff']]
-    : s.tool === 'pencil'   ? [[0.55, 0.7, C]]
+  if (s.tool === 'neon') {
+    // True bloom: additive halo passes with real shadowBlur, then a crisp
+    // saturated core with a hot white center. (Previously: flat alpha
+    // passes with no blur — it read as a thick marker, not a glow.)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = C;
+    ctx.shadowColor = C;
+    ctx.shadowBlur = s.size * 6; ctx.globalAlpha = 0.32; ctx.lineWidth = s.size * 3.2;
+    tracePath(s); ctx.stroke();
+    ctx.shadowBlur = s.size * 3; ctx.globalAlpha = 0.5; ctx.lineWidth = s.size * 1.9;
+    tracePath(s); ctx.stroke();
+    ctx.restore();
+    // saturated core, back in normal blending
+    ctx.globalAlpha = 1; ctx.strokeStyle = C; ctx.lineWidth = s.size;
+    tracePath(s); ctx.stroke();
+    // hot white center
+    ctx.globalAlpha = 0.85; ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = Math.max(1.5, s.size * 0.42);
+    tracePath(s); ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  const passes =
+    s.tool === 'pencil'   ? [[0.55, 0.7, C]]
     : s.tool === 'marker'   ? [[1.7, 0.95, C]]
     : s.tool === 'highlighter' ? [[2.8, 0.32, C]]
     : s.tool === 'eraser'   ? [[2.2, 1, C]]
@@ -398,6 +435,7 @@ function render() {
   requestAnimationFrame(render);
   if (!dirty) return;
   dirty = false;
+  fontAnimActive = false;
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = themeColors.bg;
@@ -414,6 +452,7 @@ function render() {
     }
 
   for (const s of strokes.values()) drawStroke(s);
+  if (fontAnimActive) dirty = true; // keep frames coming until the font pop settles
   if (activeStroke && activeStroke.points.length >= 2) drawStroke(activeStroke);
 
   if (previewShape) {
@@ -481,20 +520,45 @@ let selectedAt = 0;
    nothing jumps when they first render as wrapped text. */
 const TEXT_LINE_H = 1.2; // line height as a multiple of the font size
 const TEXT_DEFAULT_W = 280; // box width for a plain tap
+
+/* ================= text fonts ================= */
+const FONTS = {
+  playfair:   { label: 'Vintage',    css: '"Playfair Display", Georgia, serif' },
+  typewriter: { label: 'Typewriter', css: '"Special Elite", "Courier New", monospace' },
+  script:     { label: 'Script',     css: '"Pinyon Script", "Snell Roundhand", cursive' },
+  classic:    { label: 'Classic',    css: '-apple-system, "SF Pro Text", sans-serif' },
+};
+const FONT_KEYS = Object.keys(FONTS);
+const DEFAULT_FONT = 'playfair'; // vintage serif — the new default
+let textFont = DEFAULT_FONT; // font for newly placed text
+let fontEpoch = 0; // bumped when webfonts finish loading, invalidates the wrap cache
+function textFontCss(s) {
+  const key = s && s.font && FONTS[s.font] ? s.font : DEFAULT_FONT;
+  return FONTS[key].css;
+}
+// webfonts arrive after first paint: re-measure and repaint when they land
+if (typeof document !== 'undefined' && document.fonts && document.fonts.load) {
+  Promise.all([
+    document.fonts.load('400 16px "Playfair Display"'),
+    document.fonts.load('400 16px "Special Elite"'),
+    document.fonts.load('400 16px "Pinyon Script"'),
+  ]).then(() => { fontEpoch++; dirty = true; }).catch(() => {});
+}
+let fontAnimActive = false; // set while a font-change pop is playing
 function textFontPx(s) { return s.size * 2.2; }
 function textBoxW(s) {
   if (Number.isFinite(s.w) && s.w > 0) return s.w;
-  ctx.font = `${textFontPx(s)}px -apple-system, "SF Pro Text", sans-serif`;
+  ctx.font = `${textFontPx(s)}px ${textFontCss(s)}`;
   return Math.max(24, ctx.measureText(s.text || ' ').width);
 }
 const wrapCache = new WeakMap(); // stroke object → { key, lines }
 function wrapText(s) {
   const fs = textFontPx(s);
   const maxW = textBoxW(s);
-  const key = `${s.text}\n${maxW}\n${fs}`;
+  const key = `${s.text}\n${maxW}\n${fs}\n${textFontCss(s)}\n${fontEpoch}`;
   const hit = wrapCache.get(s);
   if (hit && hit.key === key) return hit.lines;
-  ctx.font = `${fs}px -apple-system, "SF Pro Text", sans-serif`;
+  ctx.font = `${fs}px ${textFontCss(s)}`;
   const measure = (t) => ctx.measureText(t).width;
   const lines = [];
   for (const para of String(s.text == null ? '' : s.text).split('\n')) {
@@ -541,6 +605,18 @@ function selectionHandles(s) {
     return [{ x: x1, y: y1, corner: 0 }, { x: x2, y: y2, corner: 1 }];
   }
   const b = shapeBBox(s);
+  if (s.tool === 'text') {
+    // paragraph text: corners scale the type (Free-Transform-like), left/right
+    // edges reflow the box (Photoshop paragraph behavior)
+    return [
+      { x: b.x, y: b.y, corner: 'tl' },
+      { x: b.x + b.w, y: b.y, corner: 'tr' },
+      { x: b.x, y: b.y + b.h, corner: 'bl' },
+      { x: b.x + b.w, y: b.y + b.h, corner: 'br' },
+      { x: b.x, y: b.y + b.h / 2, corner: 'l' },
+      { x: b.x + b.w, y: b.y + b.h / 2, corner: 'r' },
+    ];
+  }
   return [
     { x: b.x, y: b.y, corner: 'tl' },
     { x: b.x + b.w, y: b.y, corner: 'tr' },
@@ -553,6 +629,8 @@ function oppositeCorner(b, corner) {
     case 'tl': return { x: b.x + b.w, y: b.y + b.h };
     case 'tr': return { x: b.x, y: b.y + b.h };
     case 'bl': return { x: b.x + b.w, y: b.y };
+    case 'l': return { x: b.x + b.w, y: b.y + b.h / 2 };
+    case 'r': return { x: b.x, y: b.y + b.h / 2 };
     default: return { x: b.x, y: b.y };
   }
 }
@@ -608,7 +686,11 @@ function select(id) {
   if (G) G.fromTo(btn, { scale: .3, opacity: 0 }, { scale: 1, opacity: 1, duration: .38, ease: 'back.out(2.2)', clearProps: 'scale' });
   positionDeleteBtn();
   const s = strokes.get(id);
-  if (s && s.tool === 'text') $('#inp-size').value = s.size; // slider now drives this text
+  if (s && s.tool === 'text') {
+    $('#inp-size').value = s.size; // slider now drives this text
+    if (s.font && FONTS[s.font] && s.font !== textFont) { textFont = s.font; syncFontChips(); }
+  }
+  updateFontRow();
   dirty = true;
 }
 function deselect() {
@@ -616,6 +698,7 @@ function deselect() {
   selectedId = null;
   $('#btn-delete').classList.add('hidden');
   $('#inp-size').value = currentSize();
+  updateFontRow();
   dirty = true;
 }
 function positionDeleteBtn() {
@@ -646,7 +729,7 @@ $('#btn-delete').onclick = () => {
 let xformTimer = null;
 function transformPatch(s) {
   return s.tool === 'text'
-    ? { x: s.x, y: s.y, w: s.w, size: s.size }
+    ? { x: s.x, y: s.y, w: s.w, size: s.size, font: s.font }
     : { points: s.points.slice() };
 }
 function emitTransform(s, final) {
@@ -678,13 +761,29 @@ function applyResize(s, g, curW) {
     return;
   }
   if (s.tool === 'text') {
-    // paragraph text: handles resize the BOX (text re-wraps, auto-grows).
-    // Font size is the size slider's job, not the handles'.
+    // edge handles: resize the BOX — text re-wraps, auto-grows, font untouched
+    // (Photoshop paragraph-text behavior). Corner handles: scale the TYPE about
+    // the opposite corner — font size and box grow together, wrapping stays
+    // proportional (Free-Transform-like). The size slider still works too.
     const o = g.opposite;
-    let nx = curW.x;
-    if (Math.abs(nx - o.x) < 12) nx = o.x + (nx >= o.x ? 12 : -12);
-    s.x = Math.min(o.x, nx);
-    s.w = Math.max(24, Math.abs(nx - o.x));
+    if (g.handle.corner === 'l' || g.handle.corner === 'r') {
+      let nx = curW.x;
+      if (Math.abs(nx - o.x) < 12) nx = o.x + (nx >= o.x ? 12 : -12);
+      s.x = Math.min(o.x, nx);
+      s.w = Math.max(24, Math.abs(nx - o.x));
+      return;
+    }
+    const t0 = g.origText;
+    if (!t0) return;
+    const d0 = Math.hypot(g.startW.x - o.x, g.startW.y - o.y);
+    const d1 = Math.hypot(curW.x - o.x, curW.y - o.y);
+    if (d0 < 4) return;
+    const newSize = Math.min(200, Math.max(4, t0.size * (d1 / d0)));
+    const k = newSize / t0.size; // re-derive so the box tracks the clamped size
+    s.size = newSize;
+    s.w = Math.max(24, t0.w * k);
+    s.x = o.x + (t0.x - o.x) * k;
+    s.y = o.y + (t0.y - o.y) * k;
     return;
   }
   // rect / circle: map original geometry into the new bbox
@@ -774,6 +873,8 @@ canvas.addEventListener('pointerdown', (e) => {
         kind: 'resize-sel', s, handle: h,
         startW: w, opposite: s.tool === 'line' ? null : oppositeCorner(b, h.corner),
         bbox0: { ...b, pts: s.points ? s.points.slice() : null },
+        // corner-scale for text needs the pre-gesture geometry
+        origText: s.tool === 'text' ? { x: s.x, y: s.y, w: textBoxW(s), size: s.size } : null,
       };
       hideRing();
       return;
@@ -867,6 +968,9 @@ canvas.addEventListener('pointermove', (e) => {
   }
   if (gesture.kind === 'resize-sel') {
     applyResize(gesture.s, gesture, w);
+    // corner-scaling text changes the font size — keep the slider honest
+    if (gesture.s.tool === 'text' && gesture.handle.corner !== 'l' && gesture.handle.corner !== 'r')
+      $('#inp-size').value = Math.round(gesture.s.size);
     scheduleTransform(gesture.s);
     dirty = true;
     return;
@@ -993,6 +1097,7 @@ function showTextOverlay(box, sx, sy) {
   const ta = $('#inp-text');
   ta.value = '';
   ta.style.height = 'auto';
+  ta.style.fontFamily = FONTS[textFont].css; // the editor previews the chosen font
   ta.style.fontSize = ''; // fixed comfortable typing size (CSS 17px): scaling the
   // font to preview the box's wrapping made narrow boxes unusable (giant font,
   // one word per line). The canvas behind shows the real wrapping on Place.
@@ -1014,7 +1119,7 @@ $('#btn-text-ok').onclick = () => {
   const t = $('#inp-text').value.trim().slice(0, 500);
   $('#text-overlay').classList.add('hidden');
   if (!t || !textBox) { textBox = null; return; }
-  const s = { id: newStrokeId(), tool: 'text', color, size: textSize, text: t, x: textBox.x, y: textBox.y, w: textBox.w };
+  const s = { id: newStrokeId(), tool: 'text', color, size: textSize, font: textFont, text: t, x: textBox.x, y: textBox.y, w: textBox.w };
   strokes.set(s.id, s);
   myStrokeIds.push(s.id); redoStack.length = 0;
   socket.emit('stroke-add', s);
@@ -1154,6 +1259,7 @@ document.querySelectorAll('.tool').forEach((btn) => {
     btn.classList.add('active');
     tool = btn.dataset.tool;
     $('#inp-size').value = currentSize();
+    updateFontRow();
     canvas.style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
     if (G) G.fromTo(btn, { scale: .8 }, { scale: 1, duration: .38, ease: 'back.out(2.5)', clearProps: 'scale' });
     updateRing();
@@ -1188,6 +1294,44 @@ customWrap.querySelector('input').oninput = (e) => {
   customWrap.classList.add('active');
 };
 colorsRow.appendChild(customWrap);
+
+/* ---------- font picker: contextual, only for text ---------- */
+const fontRow = $('#font-row');
+FONT_KEYS.forEach((key) => {
+  const b = document.createElement('button');
+  b.className = 'font-chip' + (key === textFont ? ' active' : '');
+  b.dataset.font = key;
+  b.title = FONTS[key].label;
+  b.innerHTML = `<span class="ag" style="font-family:${FONTS[key].css}">Ag</span><small>${FONTS[key].label}</small>`;
+  b.onclick = () => setFont(key, b);
+  fontRow.appendChild(b);
+});
+function setFont(key, chip) {
+  if (!FONTS[key]) return;
+  textFont = key;
+  syncFontChips();
+  const ta = $('#inp-text');
+  if (ta) ta.style.fontFamily = FONTS[key].css; // the editor follows, even mid-typing
+  if (chip && G) G.fromTo(chip, { scale: .85 }, { scale: 1, duration: .45, ease: 'back.out(3)', clearProps: 'scale' });
+  const sel = selectedId ? strokes.get(selectedId) : null;
+  if (sel && sel.tool === 'text' && sel.font !== key) {
+    sel.font = key;
+    sel._fontPop = performance.now();
+    finalizeTransform(sel); // broadcast + persist via the server
+  }
+  dirty = true;
+}
+function syncFontChips() {
+  document.querySelectorAll('.font-chip').forEach((c) => c.classList.toggle('active', c.dataset.font === textFont));
+}
+function updateFontRow() {
+  const sel = selectedId ? strokes.get(selectedId) : null;
+  const show = tool === 'text' || (sel && sel.tool === 'text');
+  const wasHidden = fontRow.classList.contains('hidden');
+  fontRow.classList.toggle('hidden', !show);
+  if (show && wasHidden && G)
+    G.fromTo(fontRow, { y: 10, opacity: 0 }, { y: 0, opacity: 1, duration: .32, ease: 'power2.out', clearProps: 'all' });
+}
 
 $('#inp-size').oninput = (e) => {
   const v = Number(e.target.value);
@@ -1422,13 +1566,17 @@ function connectSocket() {
     if (selectedId === id) deselect();
     dirty = true;
   });
-  socket.on('stroke-transform', ({ id, points, x, y, w, size }) => {
+  socket.on('stroke-transform', ({ id, points, x, y, w, size, font }) => {
     const s = strokes.get(id);
     if (!s) return;
     if (points) s.points = points;
     if (x !== undefined) { s.x = x; s.y = y; }
     if (w !== undefined) s.w = w;
     if (size !== undefined) s.size = size;
+    if (font !== undefined && FONTS[font]) {
+      if (s.font !== font) s._fontPop = performance.now(); // partner sees the pop too
+      s.font = font;
+    }
     dirty = true;
   });
   socket.on('canvas-clear', () => {

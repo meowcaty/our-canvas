@@ -68,6 +68,8 @@ function sanitizeStroke(s, authorId, authorName) {
     stroke.x = x; stroke.y = y;
     const w = Number(s.w);
     stroke.w = Number.isFinite(w) ? Math.min(1e6, Math.max(24, w)) : 280;
+    const f = String(s.font || '');
+    stroke.font = ['playfair', 'typewriter', 'script', 'classic'].includes(f) ? f : 'playfair';
   } else {
     const pts = Array.isArray(s.points) ? s.points : [];
     if (tool === 'line' || tool === 'rect' || tool === 'circle') {
@@ -244,7 +246,7 @@ async function main() {
     });
 
     // live move/resize of shapes & text — shared canvas, anyone may edit
-    socket.on('stroke-transform', ({ id, points, x, y, w, size }) => {
+    socket.on('stroke-transform', ({ id, points, x, y, w, size, font }) => {
       const c = clients.get(socket.id);
       if (!c) return;
       const stroke = strokes.find((s) => s.id === id);
@@ -257,6 +259,8 @@ async function main() {
         if (Number.isFinite(nw)) patch.w = Math.min(1e6, Math.max(24, nw));
         const ns = Number(size);
         if (Number.isFinite(ns)) patch.size = Math.min(200, Math.max(4, ns));
+        const nf = String(font || '');
+        if (['playfair', 'typewriter', 'script', 'classic'].includes(nf)) patch.font = nf;
       } else if (Array.isArray(points) && points.length === 4 && points.every(Number.isFinite)) {
         patch.points = points.map((n) => Math.max(-1e6, Math.min(1e6, n)));
       } else return;

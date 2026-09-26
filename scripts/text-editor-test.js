@@ -22,6 +22,11 @@ function fnEnd(from) {
 const start = src.indexOf('function showTextOverlay(');
 if (start < 0) throw new Error('showTextOverlay not found');
 const fnSrc = src.slice(start, fnEnd(start));
+// verbatim font helpers (the overlay previews the font)
+const fStart = src.indexOf('const FONTS = {');
+const fontsSrc = src.slice(fStart, src.indexOf('};', fStart) + 2);
+const tfcStart = src.indexOf('function textFontCss(');
+const tfcSrc = src.slice(tfcStart, fnEnd(tfcStart));
 
 const results = [];
 function check(name, cond) {
@@ -37,10 +42,15 @@ function makeEnv(innerWidth = 390, innerHeight = 844) {
     window: { innerWidth, innerHeight },
     G: null,
     textBox: null,
+    textFont: 'playfair',
     setTimeout: (fn) => 0,
   };
   vm.createContext(sandbox);
-  vm.runInContext(fnSrc + '\nthis.__show = showTextOverlay;', sandbox, { filename: 'client-text-editor' });
+  // the overlay previews the font: seed the sandbox with the verbatim FONTS block
+  vm.runInContext(
+    fontsSrc + '\nconst DEFAULT_FONT = "playfair";\n' + tfcSrc + '\n' +
+    fnSrc + '\nthis.__show = showTextOverlay;',
+    sandbox, { filename: 'client-text-editor' });
   return { sandbox, ta, ov };
 }
 

@@ -157,6 +157,20 @@ html, body {
 .colors-row { display: flex; gap: 8px; overflow-x: auto; flex: 1; scrollbar-width: none; padding: 2px; }
 .colors-row::-webkit-scrollbar { display: none; }
 
+/* ---------- font picker: contextual, only for text ---------- */
+.font-row { display: flex; gap: 8px; padding: 10px 2px 2px; overflow-x: auto; scrollbar-width: none; }
+.font-row::-webkit-scrollbar { display: none; }
+.font-row.hidden { display: none; }
+.font-chip {
+  flex: none; min-width: 68px; padding: 9px 10px 7px; border-radius: 13px;
+  background: var(--field); border: 1.5px solid transparent; color: var(--text);
+  display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer;
+}
+.font-chip .ag { font-size: 21px; line-height: 1; }
+.font-chip small { font-size: 10px; letter-spacing: .2px; color: var(--text-2); font-family: -apple-system, sans-serif; }
+.font-chip.active { border-color: var(--accent); background: var(--accent-soft); }
+.font-chip:active { transform: scale(.9); }
+
 /* ---------- smart tool labels: no permanent labels, zero clutter ----------
    - long-press any tool → its name pops up above it (always available)
    - tapping a tool always flashes its name for ~2s

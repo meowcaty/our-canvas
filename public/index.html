@@ -3,9 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ff2d55">
 <title>Our Canvas</title>
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="fonts/fonts.css">
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
 <script>
   // theme before first paint (no flash)
@@ -178,6 +182,7 @@
       <div id="colors-row" class="colors-row"></div>
       <input id="inp-size" type="range" min="2" max="48" value="8" title="brush size">
     </div>
+    <div id="font-row" class="font-row hidden"></div>
   </div>
 
   <div id="tool-tip" class="glass tool-tip hidden"></div>
