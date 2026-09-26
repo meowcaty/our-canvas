@@ -282,6 +282,13 @@ html, body {
   30% { transform: translateY(-10px); opacity: 1; }
 }
 .loader-text { margin: 0; font-size: 15px; font-weight: 500; color: var(--text-2); }
+.loader-error { margin: 0; max-width: 300px; text-align: center; font-size: 14px; line-height: 1.5; color: var(--text); }
+.loader-retry {
+  border: 0; cursor: pointer; padding: 11px 30px; border-radius: 999px;
+  background: var(--accent); color: #fff; font-size: 15px; font-weight: 600;
+  box-shadow: 0 8px 22px rgba(255, 45, 85, .35);
+}
+.loader-retry:active { transform: scale(.96); }
 
 /* persistent server connection indicator in the topbar */
 .top-left { display: flex; align-items: center; gap: 10px; min-width: 0; }

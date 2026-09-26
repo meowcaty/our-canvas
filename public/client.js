@@ -236,16 +236,50 @@ function enterCanvas() {
   }
   if (!socket) {
     // canvas content arrives over the socket — playful loader until it does
+    resetLoaderState();
     $('#canvas-loader').classList.remove('hidden');
     connectSocket();
+    armLoaderWatchdog();
   }
 }
 
 function hideLoader() {
+  resetLoaderState();
   const l = $('#canvas-loader');
   if (!l || l.classList.contains('hidden')) return;
   if (G) G.to(l, { opacity: 0, duration: .45, ease: 'power2.out', onComplete: () => { l.classList.add('hidden'); l.style.opacity = ''; } });
   else l.classList.add('hidden');
+}
+
+/* loader watchdog: "Preparing your canvas…" must never hang silently.
+   canvas-state is the only thing that dismisses the loader, so if the
+   server is down, crash-looping, or waking slowly, say so and offer a retry. */
+let loaderTimer = null;
+function resetLoaderState() {
+  if (loaderTimer) { clearTimeout(loaderTimer); loaderTimer = null; }
+  const dots = $('.loader-dots'), txt = $('.loader-text'),
+        err = $('#loader-error'), btn = $('#loader-retry');
+  if (dots) dots.classList.remove('hidden');
+  if (txt) txt.textContent = 'Preparing your canvas…';
+  if (err) err.classList.add('hidden');
+  if (btn) btn.classList.add('hidden');
+}
+function showLoaderError(msg) {
+  const l = $('#canvas-loader');
+  if (!l || l.classList.contains('hidden')) return;
+  if (loaderTimer) { clearTimeout(loaderTimer); loaderTimer = null; }
+  const dots = $('.loader-dots'), txt = $('.loader-text'),
+        err = $('#loader-error'), btn = $('#loader-retry');
+  if (dots) dots.classList.add('hidden');
+  if (txt) txt.textContent = 'Taking longer than usual…';
+  if (err) { err.textContent = msg; err.classList.remove('hidden'); }
+  if (btn) btn.classList.remove('hidden');
+}
+function armLoaderWatchdog() {
+  if (loaderTimer) clearTimeout(loaderTimer);
+  loaderTimer = setTimeout(() => {
+    showLoaderError('The server isn\u2019t responding. Free-tier servers can take up to a minute to wake up \u2014 if this keeps happening, the server may be down.');
+  }, 20000);
 }
 
 /* persistent server connection indicator */
@@ -1709,9 +1743,17 @@ function connectSocket() {
   });
   socket.io.on('reconnect_attempt', () => setConn('connecting'));
   socket.on('connect_error', (err) => {
+    const msg = (err && err.message) || '';
     // expired session → back to the lock screen via reload;
-    // anything else → socket.io retries on its own, pill shows it
-    if (err && /unauthorized/i.test(err.message || '')) { setTimeout(() => location.reload(), 800); return; }
+    // banned → say so plainly (retrying for 24h is pointless);
+    // anything else → socket.io retries on its own, pill shows it,
+    // and the loader watchdog explains the wait after 20s
+    if (/unauthorized/i.test(msg)) { setTimeout(() => location.reload(), 800); return; }
+    if (/banned/i.test(msg)) {
+      showLoaderError('This device is temporarily blocked after too many wrong passwords. Try again in 24 hours.');
+      setConn('offline');
+      return;
+    }
     setConn('connecting');
   });
   socket.on('canvas-state', ({ strokes: list, lastEdit, me, peers: peerList }) => {
@@ -1783,6 +1825,8 @@ function connectSocket() {
 }
 
 /* ================= go ================= */
+const retryBtn = $('#loader-retry');
+if (retryBtn) retryBtn.addEventListener('click', () => location.reload());
 resize();
 render();
 boot();
