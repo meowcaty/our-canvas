@@ -1,23 +1,6 @@
 /* 🍎 Our Canvas — Apple-inspired UI */
 
-:root, [data-theme="dark"] {
-  --bg: #000000;
-  --bg-group: #0a0a0c;
-  --card: #1c1c1e;
-  --field: #1c1c1e;
-  --text: #ffffff;
-  --text-2: #98989f;
-  --separator: #38383a;
-  --accent: #ff2d55;
-  --accent-soft: rgba(255, 45, 85, .16);
-  --glass: rgba(28, 28, 30, .72);
-  --canvas-bg: #060609;
-  --dot: rgba(255, 255, 255, .08);
-  --shadow: 0 12px 40px rgba(0, 0, 0, .5);
-  --tool-bg: rgba(255, 255, 255, .06);
-}
-
-[data-theme="light"] {
+:root {
   --bg: #f2f2f7;
   --bg-group: #ffffff;
   --card: #ffffff;
@@ -267,7 +250,6 @@ html, body {
   transition: transform .18s ease;
 }
 .delete-btn:active { transform: scale(.88); }
-[data-theme="dark"] .delete-btn { background: rgba(44,44,46,.92); box-shadow: 0 4px 16px rgba(0,0,0,.5), 0 0 0 .5px rgba(255,255,255,.12); }
 
 /* playful loading overlay while the canvas is fetched */
 .canvas-loader {

@@ -16,7 +16,7 @@
   "name": "our-canvas",
   "scripts": {
     "start": "node server.js",
-    "test": "node scripts/simulate.js && node scripts/text-geometry-test.js && node scripts/otp-boxes-test.js && node scripts/persistence-flush-test.js && node scripts/reconnect-reload-test.js && node scripts/tool-labels-test.js && node scripts/last-edit-test.js && node scripts/frame-view-test.js"
+    "test": "node scripts/simulate.js && node scripts/text-geometry-test.js && node scripts/otp-boxes-test.js && node scripts/persistence-flush-test.js && node scripts/reconnect-reload-test.js && node scripts/tool-labels-test.js && node scripts/last-edit-test.js && node scripts/frame-view-test.js && node scripts/text-wrap-test.js && node scripts/text-server-test.js && node scripts/text-transform-test.js && node scripts/text-editor-test.js && node scripts/text-font-test.js && node scripts/tools-sheet-test.js && node scripts/render-hygiene-test.js && node scripts/eraser-geometry-test.js"
   },
   "version": "1.0.0"
 }

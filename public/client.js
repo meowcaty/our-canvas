@@ -14,32 +14,14 @@ const api = async (path, opts = {}) => {
   return { status: res.status, ...body };
 };
 
-/* ================= theme ================= */
-function currentTheme() { return document.documentElement.dataset.theme || 'dark'; }
-function applyTheme(t) {
-  document.documentElement.dataset.theme = t;
-  try { localStorage.setItem('ourcanvas_theme', t); } catch {}
-  $('#ic-moon').classList.toggle('hidden', t !== 'dark');
-  $('#ic-sun').classList.toggle('hidden', t !== 'light');
-  document.querySelector('meta[name="theme-color"]').content = t === 'dark' ? '#000000' : '#f2f2f7';
-  refreshThemeColors();
-  if (color === '#ffffff' && t === 'light') setColor('#1c1c1e');
-  if (color === '#1c1c1e' && t === 'dark') setColor('#ffffff');
-  dirty = true;
-}
-let themeColors = { bg: '#060609', dot: 'rgba(255,255,255,.08)' };
-function refreshThemeColors() {
-  const cs = getComputedStyle(document.documentElement);
-  themeColors.bg = cs.getPropertyValue('--canvas-bg').trim() || themeColors.bg;
-  themeColors.dot = cs.getPropertyValue('--dot').trim() || themeColors.dot;
-}
+/* ================= theme (light only) ================= */
+const themeColors = { bg: '#fbfbfc', dot: 'rgba(0,0,0,.09)' };
 
 /* ================= boot flow ================= */
 let myName = '';
 try { myName = localStorage.getItem('ourcanvas_name') || ''; } catch {}
 
 async function boot() {
-  applyTheme(currentTheme());
   const me = await api('/api/me');
   if (me.ok) {
     if (me.name) { myName = me.name; enterCanvas(); }
@@ -220,13 +202,21 @@ let socket = null;
 const cam = { x: 0, y: 0, zoom: 1 };
 const strokes = new Map();
 const peers = new Map();
-const myStrokeIds = [];
+// Undo is personal: it reverses my last action in order. Entries are
+// {kind:'add', id} for a drawn stroke, or {kind:'erase', removed, added}
+// for one eraser gesture (removed/added hold full stroke copies).
+const undoStack = [];
 const redoStack = [];
+// drop a pending 'add' undo entry for id (e.g. the stroke vanished another way)
+function dropAddUndo(id) {
+  for (let i = undoStack.length - 1; i >= 0; i--)
+    if (undoStack[i].kind === 'add' && undoStack[i].id === id) undoStack.splice(i, 1);
+}
 let strokeSeq = 0;
 let dirty = true;
 
 let tool = 'pen';
-let color = currentTheme() === 'dark' ? '#ffffff' : '#1c1c1e';
+let color = '#1c1c1e';
 let brushSize = 8;
 let textSize = 18; // text defaults to a phone-readable size (font ≈ size × 2.2)
 function currentSize() { return tool === 'text' ? textSize : brushSize; }
@@ -304,7 +294,8 @@ function tracePath(s) {
 }
 
 function drawStroke(s) {
-  // A real eraser: paints the canvas background back over ink.
+  // Legacy eraser paint strokes (from before the geometric eraser) still render
+  // as background-colored cover-up so old canvases look the same.
   const C = s.tool === 'eraser' ? themeColors.bg : s.color;
   ctx.save();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -499,9 +490,9 @@ function render() {
     const w = ctx.measureText(p.name).width;
     const bx = p.x + 12 / cam.zoom, by = p.y + 12 / cam.zoom;
     const pad = 6 / cam.zoom, h = 20 / cam.zoom;
-    ctx.fillStyle = currentTheme() === 'dark' ? 'rgba(28,28,30,.9)' : 'rgba(255,255,255,.92)';
+    ctx.fillStyle = 'rgba(255,255,255,.92)';
     ctx.beginPath(); ctx.roundRect(bx, by, w + pad * 2, h, h / 2); ctx.fill();
-    ctx.fillStyle = currentTheme() === 'dark' ? '#fff' : '#000';
+    ctx.fillStyle = '#000';
     ctx.fillText(p.name, bx + pad, by + pad * 0.7);
     ctx.restore();
   }
@@ -678,6 +669,119 @@ function insideSelection(w) {
   return w.x > b.x - pad && w.x < b.x + b.w + pad && w.y > b.y - pad && w.y < b.y + b.h + pad;
 }
 
+/* ============ real eraser: destroy ink geometrically, no paint ============ */
+// The eraser used to paint background-colored strokes over ink (a cover-up:
+// moving a shape "healed" the erased part, and neon kept a ghost halo).
+// Now it cuts the actual stroke geometry. Text is immune; shapes bitten by
+// the eraser become plain ink (a bitten circle is no longer a circle).
+const ERASABLE = ['pen', 'pencil', 'marker', 'highlighter', 'neon', 'eraser', 'line', 'rect', 'circle'];
+function eraseRadiusWorld() { return brushSize * 1.1; } // matches the old 2.2x paint swath
+
+// resample a shape into a closed polyline (flat [x,y,…]) so the eraser can bite it
+function sampleShapePath(s) {
+  const [x1, y1, x2, y2] = s.points;
+  const pts = [];
+  if (s.tool === 'line') return [x1, y1, x2, y2];
+  if (s.tool === 'rect') {
+    const per = 2 * (Math.abs(x2 - x1) + Math.abs(y2 - y1));
+    const n = Math.max(16, Math.ceil(per / 4));
+    for (let i = 0; i <= n; i++) {
+      const t = (i % n) / n * 4, seg = Math.floor(t), f = t - seg;
+      const cx = [x1, x2, x2, x1][seg], cy = [y1, y1, y2, y2][seg];
+      const nx = [x2, x2, x1, x1][seg], ny = [y1, y2, y2, y1][seg];
+      pts.push(cx + (nx - cx) * f, cy + (ny - cy) * f);
+    }
+    return pts;
+  }
+  // circle / ellipse
+  const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+  const rx = Math.abs(x2 - x1) / 2, ry = Math.abs(y2 - y1) / 2;
+  const per = Math.PI * (3 * (rx + ry) - Math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
+  const n = Math.max(24, Math.ceil(per / 4));
+  for (let i = 0; i <= n; i++) {
+    const a = (i % n) / n * Math.PI * 2;
+    pts.push(cx + rx * Math.cos(a), cy + ry * Math.sin(a));
+  }
+  return pts;
+}
+
+// polyline (flat) erasable points for a stroke, or null when immune / not ink
+function erasablePoints(s) {
+  if (!ERASABLE.includes(s.tool)) return null; // text is immune
+  const p = s.points;
+  if (!p || p.length < 2) return null;
+  if (s.tool === 'line' || s.tool === 'rect' || s.tool === 'circle') return sampleShapePath(s);
+  return p;
+}
+
+// cut a polyline by the dab circle (cx,cy,r).
+// Returns null when untouched, [] when fully erased, else an array of fragments.
+function splitPolyline(pts, cx, cy, r) {
+  const n = pts.length / 2;
+  if (n === 1) {
+    const dx = pts[0] - cx, dy = pts[1] - cy;
+    return (dx * dx + dy * dy < r * r) ? [] : null;
+  }
+  const c = { x: cx, y: cy };
+  let anyCut = false;
+  const cut = new Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    const hit = distToSeg(c, { x: pts[2 * i], y: pts[2 * i + 1] }, { x: pts[2 * i + 2], y: pts[2 * i + 3] }) < r;
+    cut[i] = hit;
+    if (hit) anyCut = true;
+  }
+  if (!anyCut) return null;
+  const frags = [];
+  let cur = null;
+  for (let i = 0; i < n - 1; i++) {
+    if (!cut[i]) {
+      if (!cur) cur = [pts[2 * i], pts[2 * i + 1]];
+      cur.push(pts[2 * i + 2], pts[2 * i + 3]);
+    } else if (cur) { frags.push(cur); cur = null; }
+  }
+  if (cur) frags.push(cur);
+  return frags;
+}
+
+// apply one eraser dab; g is the in-progress 'erasing' gesture (for undo bookkeeping).
+// Returns true when something changed.
+function applyEraseDab(cx, cy, r, g) {
+  let changed = false;
+  for (const s of [...strokes.values()]) {
+    const pts = erasablePoints(s);
+    if (!pts) continue;
+    // cheap bbox reject before the segment walk
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < pts.length; i += 2) {
+      const x = pts[i], y = pts[i + 1];
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (cx + r < x0 || cx - r > x1 || cy + r < y0 || cy - r > y1) continue;
+    const frags = splitPolyline(pts, cx, cy, r);
+    if (!frags) continue;
+    if (!g.erase) g.erase = { removed: new Map(), added: new Set() };
+    // record the pre-gesture original once; intermediate fragments belong to
+    // this gesture already, so re-recording them would duplicate ink on undo
+    if (!g.erase.added.has(s.id) && !g.erase.removed.has(s.id))
+      g.erase.removed.set(s.id, { ...s, points: s.points.slice() });
+    strokes.delete(s.id);
+    socket.emit('stroke-delete', { id: s.id });
+    g.erase.added.delete(s.id); // it was an intermediate fragment: superseded
+    if (selectedId === s.id) deselect();
+    for (const fp of frags) {
+      // a bitten shape is plain ink from here on (keeps its look, loses shape-ness)
+      const nt = (s.tool === 'line' || s.tool === 'rect' || s.tool === 'circle') ? 'pen' : s.tool;
+      const ns = { id: newStrokeId(), tool: nt, color: s.color, size: s.size, points: fp };
+      strokes.set(ns.id, ns);
+      socket.emit('stroke-add', ns);
+      g.erase.added.add(ns.id);
+    }
+    changed = true;
+  }
+  return changed;
+}
+
 function select(id) {
   selectedId = id;
   selectedAt = performance.now();
@@ -716,9 +820,9 @@ $('#btn-delete').onclick = () => {
   if (!s) return deselect();
   // shared canvas: either of you can delete anything
   strokes.delete(s.id);
-  const i = myStrokeIds.indexOf(s.id);
-  if (i >= 0) myStrokeIds.splice(i, 1);
-  redoStack.push({ id: s.id, stroke: s });
+  for (let i = undoStack.length - 1; i >= 0; i--)
+    if (undoStack[i].kind === 'add' && undoStack[i].id === s.id) undoStack.splice(i, 1);
+  redoStack.push({ kind: 'add', stroke: s });
   socket.emit('stroke-delete', { id: s.id });
   deselect();
   toast('Deleted — redo brings it back');
@@ -835,7 +939,7 @@ function endActiveStroke() {
       socket.emit('stroke-end', { id: activeStroke.id });
     }
     strokes.set(activeStroke.id, activeStroke);
-    myStrokeIds.push(activeStroke.id);
+    undoStack.push({ kind: 'add', id: activeStroke.id });
     redoStack.length = 0;
     activeStroke = null;
     strokeStarted = false;
@@ -888,30 +992,25 @@ canvas.addEventListener('pointerdown', (e) => {
     }
   }
 
-  // tapping an existing shape/text selects it instead of starting new input —
-  // so tap-to-select works even with the text tool active
-  if (tool !== 'pan') {
-    const hit = hitSelectable(w);
-    if (hit) {
-      activeStroke = null; strokeStarted = false;
-      previewShape = null; shapeStart = null;
-      select(hit.id);
-      pointers.delete(e.pointerId);
-      return;
-    }
-  }
-
+  // Tap selects, drag draws: don't decide on touch-down. A tap (lift without
+  // moving) hit-tests and selects; a drag runs the tool over the old content.
   if (tool === 'text') {
-    deselect();
-    // drag to draw the text box (Photoshop-style); a plain tap gets a default box
-    gesture = { kind: 'text-box', sx: e.clientX, sy: e.clientY, startW: w };
+    // drag to draw the text box (Photoshop-style); a tap on existing text
+    // selects it, a tap elsewhere gets a default box
+    const hit = hitSelectable(w);
+    gesture = { kind: 'text-box', sx: e.clientX, sy: e.clientY, startW: w, hitId: hit ? hit.id : null };
     textBoxPreview = null;
-    pointers.delete(e.pointerId);
     return;
   }
   if (tool === 'pan') {
     deselect();
     gesture = { kind: 'pan-drag', sx: e.clientX, sy: e.clientY };
+    return;
+  }
+  if (tool === 'eraser') {
+    // a real eraser: destroys ink geometrically, no paint strokes
+    gesture = { kind: 'erasing', sx: e.clientX, sy: e.clientY, erase: null, deselected: false, lx: e.clientX, ly: e.clientY };
+    sendCursor(e.clientX, e.clientY);
     return;
   }
   // brush or shape tool → tap-candidate (tap selects, drag draws)
@@ -978,12 +1077,29 @@ canvas.addEventListener('pointermove', (e) => {
   if (gesture.kind === 'text-box') {
     const moved = Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy);
     if (moved < TAP_SLOP) { textBoxPreview = null; return; }
+    if (!gesture.dragged) { gesture.dragged = true; deselect(); }
     const a = gesture.startW;
     textBoxPreview = {
       x: Math.min(a.x, w.x), y: Math.min(a.y, w.y),
       w: Math.abs(w.x - a.x), h: Math.abs(w.y - a.y),
     };
     dirty = true;
+    return;
+  }
+  if (gesture.kind === 'erasing') {
+    const moved = Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy);
+    if (moved > TAP_SLOP && !gesture.deselected) { gesture.deselected = true; deselect(); }
+    const r = eraseRadiusWorld();
+    const evts = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    let changed = false;
+    for (const ev of evts) {
+      // skip dabs too close together — splitting is idempotent anyway
+      if (Math.hypot(ev.clientX - gesture.lx, ev.clientY - gesture.ly) < r * 0.3) continue;
+      gesture.lx = ev.clientX; gesture.ly = ev.clientY;
+      const p = screenToWorld(ev.clientX, ev.clientY);
+      if (applyEraseDab(p.x, p.y, r, gesture)) changed = true;
+    }
+    if (changed) dirty = true;
     return;
   }
   if (gesture.kind === 'tap-candidate') {
@@ -1032,7 +1148,7 @@ function finishGesture(e) {
   if (g.kind === 'shape-preview' && previewShape && shapeStart) {
     const s = { id: newStrokeId(), tool: previewShape.tool, color, size: brushSize, points: previewShape.points.slice() };
     strokes.set(s.id, s);
-    myStrokeIds.push(s.id); redoStack.length = 0;
+    undoStack.push({ kind: 'add', id: s.id }); redoStack.length = 0;
     socket.emit('stroke-add', s);
     previewShape = null; shapeStart = null;
     dirty = true;
@@ -1042,9 +1158,31 @@ function finishGesture(e) {
     endActiveStroke();
     return;
   }
+  if (g.kind === 'erasing') {
+    if (!g.erase) {
+      // a tap with the eraser: single dab where the finger went down
+      const w = screenToWorld(g.sx, g.sy);
+      if (applyEraseDab(w.x, w.y, eraseRadiusWorld(), g)) dirty = true;
+    }
+    if (g.erase && (g.erase.removed.size || g.erase.added.size)) {
+      undoStack.push({
+        kind: 'erase',
+        removed: [...g.erase.removed.values()],
+        added: [...g.erase.added].map((id) => ({ ...strokes.get(id), points: strokes.get(id).points.slice() })),
+      });
+      redoStack.length = 0;
+    }
+    return;
+  }
   if (g.kind === 'text-box') {
     const p = textBoxPreview;
     textBoxPreview = null;
+    // a clean tap on existing text selects it instead of opening a new box
+    if (!p && g.hitId) {
+      const hit = strokes.get(g.hitId);
+      if (hit) { select(g.hitId); return; }
+    }
+    deselect();
     const box = p
       ? { x: p.x, y: p.y, w: Math.max(24, p.w) }
       : { x: g.startW.x, y: g.startW.y, w: TEXT_DEFAULT_W };
@@ -1066,7 +1204,7 @@ function finishGesture(e) {
       // tap with a brush on empty canvas = dot
       const s = { ...activeStroke, points: activeStroke.points.slice() };
       strokes.set(s.id, s);
-      myStrokeIds.push(s.id); redoStack.length = 0;
+      undoStack.push({ kind: 'add', id: s.id }); redoStack.length = 0;
       socket.emit('stroke-add', s);
       activeStroke = null;
       dirty = true;
@@ -1121,7 +1259,7 @@ $('#btn-text-ok').onclick = () => {
   if (!t || !textBox) { textBox = null; return; }
   const s = { id: newStrokeId(), tool: 'text', color, size: textSize, font: textFont, text: t, x: textBox.x, y: textBox.y, w: textBox.w };
   strokes.set(s.id, s);
-  myStrokeIds.push(s.id); redoStack.length = 0;
+  undoStack.push({ kind: 'add', id: s.id }); redoStack.length = 0;
   socket.emit('stroke-add', s);
   textBox = null;
   dirty = true;
@@ -1370,28 +1508,57 @@ function moveRing(x, y) {
 function hideRing() { ring.style.opacity = '0'; }
 
 /* ================= top bar ================= */
-$('#btn-theme').onclick = () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
 $('#btn-undo').onclick = () => {
-  const id = myStrokeIds.pop();
-  if (!id) return toast('Nothing to undo');
-  const s = strokes.get(id);
-  strokes.delete(id);
-  if (s) redoStack.push({ id, stroke: s });
-  socket.emit('stroke-undo', { id });
-  if (selectedId === id) deselect();
+  const a = undoStack.pop();
+  if (!a) return toast('Nothing to undo');
+  if (a.kind === 'erase') {
+    // reverse one eraser gesture: drop its fragments, restore the originals
+    for (const s of a.added) {
+      strokes.delete(s.id);
+      socket.emit('stroke-delete', { id: s.id });
+      if (selectedId === s.id) deselect();
+    }
+    for (const s of a.removed) {
+      const copy = { ...s, points: s.points.slice() };
+      strokes.set(copy.id, copy);
+      socket.emit('stroke-add', copy);
+    }
+    redoStack.push(a);
+  } else {
+    const s = strokes.get(a.id);
+    strokes.delete(a.id);
+    if (s) redoStack.push({ kind: 'add', stroke: s });
+    socket.emit('stroke-undo', { id: a.id });
+    if (selectedId === a.id) deselect();
+  }
   dirty = true;
 };
 $('#btn-redo').onclick = () => {
   const r = redoStack.pop();
   if (!r) return toast('Nothing to redo');
-  strokes.set(r.id, r.stroke);
-  myStrokeIds.push(r.id);
-  socket.emit('stroke-add', r.stroke);
+  if (r.kind === 'erase') {
+    // re-apply the eraser gesture
+    for (const s of r.removed) {
+      strokes.delete(s.id);
+      socket.emit('stroke-delete', { id: s.id });
+      if (selectedId === s.id) deselect();
+    }
+    for (const s of r.added) {
+      const copy = { ...s, points: s.points.slice() };
+      strokes.set(copy.id, copy);
+      socket.emit('stroke-add', copy);
+    }
+    undoStack.push(r);
+  } else {
+    strokes.set(r.stroke.id, r.stroke);
+    undoStack.push({ kind: 'add', id: r.stroke.id });
+    socket.emit('stroke-add', r.stroke);
+  }
   dirty = true;
 };
 $('#btn-clear').onclick = () => showConfirmClear();
 function actuallyClearCanvas() {
-  strokes.clear(); myStrokeIds.length = 0; redoStack.length = 0;
+  strokes.clear(); undoStack.length = 0; redoStack.length = 0;
   deselect();
   socket.emit('canvas-clear');
   dirty = true;
@@ -1554,15 +1721,13 @@ function connectSocket() {
   socket.on('stroke-add', (s) => {
     if (!strokes.has(s.id)) {
       strokes.set(s.id, s);
-      const i = myStrokeIds.indexOf(s.id);
-      if (i >= 0) myStrokeIds.splice(i, 1);
+      dropAddUndo(s.id);
       dirty = true;
     }
   });
   socket.on('stroke-remove', ({ id }) => {
     strokes.delete(id);
-    const i = myStrokeIds.indexOf(id);
-    if (i >= 0) myStrokeIds.splice(i, 1);
+    dropAddUndo(id);
     if (selectedId === id) deselect();
     dirty = true;
   });
@@ -1580,7 +1745,7 @@ function connectSocket() {
     dirty = true;
   });
   socket.on('canvas-clear', () => {
-    strokes.clear(); myStrokeIds.length = 0; redoStack.length = 0;
+    strokes.clear(); undoStack.length = 0; redoStack.length = 0;
     deselect();
     toast('Canvas cleared');
     dirty = true;
@@ -1604,7 +1769,6 @@ function connectSocket() {
 
 /* ================= go ================= */
 resize();
-refreshThemeColors();
 render();
 boot();
 })();
